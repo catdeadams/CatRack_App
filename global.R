@@ -248,26 +248,18 @@ MUSCLE_DISPLAY <- c(
 # ── THEME ────────────────────────────────────────────────────
 # Use system fonts only — font_google() makes outbound HTTP calls
 # at startup which are blocked in Posit Connect's build sandbox.
+# No custom fonts — font_collection/font_face can crash on some
+# Posit Connect versions. System font stack via CSS instead.
 catrack_theme <- bs_theme(
-  version    = 5,
-  bg         = "#0f0f0f",
-  fg         = "#f0f0f0",
-  primary    = "#e8ff47",
-  secondary  = "#2a2a2a",
-  success    = "#4ade80",
-  danger     = "#f87171",
-  warning    = "#fbbf24",
-  info       = "#60a5fa",
-  base_font  = font_collection(
-    font_face("Inter", src = "local('Inter'), local('Inter-Regular')"),
-    "-apple-system", "BlinkMacSystemFont", "Segoe UI", "Helvetica Neue",
-    "Arial", "sans-serif"
-  ),
-  heading_font = font_collection(
-    font_face("Inter", src = "local('Inter'), local('Inter-Bold')"),
-    "-apple-system", "BlinkMacSystemFont", "Segoe UI", "Helvetica Neue",
-    "Arial", "sans-serif"
-  ),
+  version   = 5,
+  bg        = "#0f0f0f",
+  fg        = "#f0f0f0",
+  primary   = "#e8ff47",
+  secondary = "#2a2a2a",
+  success   = "#4ade80",
+  danger    = "#f87171",
+  warning   = "#fbbf24",
+  info      = "#60a5fa",
   font_scale = 0.9,
   `border-radius` = "12px",
   `btn-border-radius` = "8px"
