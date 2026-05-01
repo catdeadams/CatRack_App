@@ -4,7 +4,7 @@
 .Renviron
 
 seed_database.R
-diagnose.R
+diagnosic.R
 generate_manifest.R
 
 # Session Data files
