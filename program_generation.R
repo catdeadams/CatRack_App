@@ -16,8 +16,8 @@ library(jsonlite)
 library(dplyr)
 
 # ── CREDENTIALS ─────────────────────────────────────────────
-SUPABASE_URL         <- Sys.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_URL         <- Sys.getenv("SUPABASE_URL",         "https://fowpjdsixqhgaqgdeiph.supabase.co")
+SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY", "YOUR_SERVICE_ROLE_KEY_HERE")
 
 # ── SUPABASE HELPERS ─────────────────────────────────────────
 sb_post <- function(table, data, upsert = FALSE) {
@@ -655,9 +655,12 @@ generate_program <- function(
     cat(sprintf("  Day %d: %s\n", i, schedule$labels[i]))
   
   # ── Create program record ─────────────────────────────────
-  if (is.null(program_name))
-    program_name <- sprintf("%s %s — Block %d", tools::toTitleCase(goal),
-                            tools::toTitleCase(split_style), block_number)
+  if (is.null(program_name)) {
+    # Replace underscores with spaces before title-casing
+    goal_label  <- tools::toTitleCase(gsub("_", " ", goal))
+    split_label <- tools::toTitleCase(gsub("_", " ", split_style))
+    program_name <- sprintf("%s %s — Block %d", goal_label, split_label, block_number)
+  }
   
   program_row <- list(
     user_id           = user_id,

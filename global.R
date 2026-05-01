@@ -11,7 +11,7 @@ library(dplyr)
 library(lubridate)
 library(plotly)
 
-for (f in c("program_generation.R", "workout_screen.R", "progress_screen.R")) {
+for (f in c("program_generation.R", "workout_screen.R", "progress_screen.R", "program_screen.R", "profile_screen.R")) {
   tryCatch(
     source(f),
     error = function(e) stop("Error sourcing ", f, ": ", conditionMessage(e))
@@ -51,7 +51,7 @@ if (length(missing_keys) > 0)
   a
 }
 
-for (f in c("program_generation.R", "workout_screen.R", "progress_screen.R")) {
+for (f in c("program_generation.R", "workout_screen.R", "progress_screen.R", "program_screen.R", "profile_screen.R")) {
   tryCatch(
     source(f),
     error = function(e) stop("Error sourcing ", f, ": ", conditionMessage(e))
@@ -144,35 +144,35 @@ sb_update <- function(table, filter_params, data, token = NULL) {
 # ── CONSTANTS ────────────────────────────────────────────────
 
 GOALS <- list(
-  hypertrophy    = list(
-    label = "💪 Hypertrophy",
-    desc  = "Build muscle size. Moderate loads, higher reps (8–15), high volume.",
-    icon  = "💪"
+  hypertrophy = list(
+    label = "Hypertrophy",
+    desc  = "Build muscle size. Moderate loads, 8–15 reps, high volume.",
+    icon  = "◈"
   ),
   strength = list(
-    label = "🏋️ Strength",
-    desc  = "Get stronger. Heavy loads, low reps (3–6), focused on big lifts.",
-    icon  = "🏋️"
+    label = "Strength",
+    desc  = "Get stronger. Heavy loads, 3–6 reps, focused on big lifts.",
+    icon  = "▲"
   ),
   fat_loss = list(
-    label = "🔥 Fat Loss",
-    desc  = "Preserve muscle while leaning out. Moderate loads, higher reps, shorter rest.",
-    icon  = "🔥"
+    label = "Fat Loss",
+    desc  = "Lean out while preserving muscle. Moderate loads, shorter rest.",
+    icon  = "◇"
   ),
   pull_up = list(
-    label = "🔝 Pull-up Focus",
-    desc  = "Build pulling strength. Upper back and bicep emphasis, weighted progressions.",
-    icon  = "🔝"
+    label = "Pull-up Focus",
+    desc  = "Build pulling strength. Upper back emphasis, weighted progressions.",
+    icon  = "↑"
   ),
   running_support = list(
-    label = "🏃 Running Support",
-    desc  = "Complement your running. Single-leg work, posterior chain, balance and calves.",
-    icon  = "🏃"
+    label = "Running Support",
+    desc  = "Complement your running. Single-leg, posterior chain, calves.",
+    icon  = "→"
   ),
   functional = list(
-    label = "⚡ Functional Fitness",
-    desc  = "Move well and feel athletic. Compound lifts across multiple planes, core stability.",
-    icon  = "⚡"
+    label = "Functional",
+    desc  = "Move athletically. Compound lifts across multiple planes.",
+    icon  = "○"
   )
 )
 
@@ -248,14 +248,12 @@ MUSCLE_DISPLAY <- c(
 # ── THEME ────────────────────────────────────────────────────
 # Use system fonts only — font_google() makes outbound HTTP calls
 # at startup which are blocked in Posit Connect's build sandbox.
-# No custom fonts — font_collection/font_face can crash on some
-# Posit Connect versions. System font stack via CSS instead.
 catrack_theme <- bs_theme(
   version   = 5,
   bg        = "#0f0f0f",
   fg        = "#f0f0f0",
-  primary   = "#e8ff47",
-  secondary = "#2a2a2a",
+  primary   = "#1D9E75",
+  secondary = "#1e1e1e",
   success   = "#4ade80",
   danger    = "#f87171",
   warning   = "#fbbf24",
@@ -265,13 +263,80 @@ catrack_theme <- bs_theme(
   `btn-border-radius` = "8px"
 )
 
+# ── SVG LOGO ─────────────────────────────────────────────────
+catrack_logo_svg <- function(size = "full", color = "#1D9E75") {
+  # size: "full" = mark + wordmark, "icon" = mark only
+  light  <- "#5DCAA5"
+  deep   <- "#0F6E56"
+  darker <- "#085041"
+  if (size == "icon") {
+    HTML(sprintf('<svg width="48" height="52" viewBox="0 0 148 158" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0"   y="34" width="14" height="108" rx="4" fill="%s"/>
+      <rect x="134" y="34" width="14" height="108" rx="4" fill="%s"/>
+      <polygon points="0,34 14,34 0,8"     fill="%s"/>
+      <polygon points="134,34 148,34 148,8" fill="%s"/>
+      <polygon points="3,30 11,30 3,14"    fill="%s" opacity="0.55"/>
+      <polygon points="137,30 145,30 145,14" fill="%s" opacity="0.55"/>
+      <rect x="-14" y="70" width="176" height="9" rx="3" fill="%s"/>
+      <rect x="-24" y="61" width="10"  height="27" rx="3" fill="%s"/>
+      <rect x="162" y="61" width="10"  height="27" rx="3" fill="%s"/>
+      <rect x="14"  y="70" width="10"  height="6"  rx="1.5" fill="%s"/>
+      <rect x="124" y="70" width="10"  height="6"  rx="1.5" fill="%s"/>
+      <circle cx="52" cy="52" r="5" fill="%s"/>
+      <circle cx="96" cy="52" r="5" fill="%s"/>
+      <rect x="-10" y="142" width="168" height="10" rx="3" fill="%s"/>
+      <rect x="-18" y="148" width="22"  height="6"  rx="2" fill="%s"/>
+      <rect x="144" y="148" width="22"  height="6"  rx="2" fill="%s"/>
+    </svg>',
+                 color,color,color,color,light,light,color,darker,darker,light,light,light,light,deep,color,color))
+  } else {
+    HTML(sprintf('<div style="display:flex;flex-direction:column;align-items:center;gap:0;">
+      <svg width="96" height="82" viewBox="-40 0 228 158" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0"   y="34" width="14" height="108" rx="4" fill="%s"/>
+        <rect x="134" y="34" width="14" height="108" rx="4" fill="%s"/>
+        <polygon points="0,34 14,34 0,8"     fill="%s"/>
+        <polygon points="134,34 148,34 148,8" fill="%s"/>
+        <polygon points="3,30 11,30 3,14"    fill="%s" opacity="0.55"/>
+        <polygon points="137,30 145,30 145,14" fill="%s" opacity="0.55"/>
+        <rect x="-14" y="70" width="176" height="9" rx="3" fill="%s"/>
+        <rect x="-24" y="61" width="10"  height="27" rx="3" fill="%s"/>
+        <rect x="162" y="61" width="10"  height="27" rx="3" fill="%s"/>
+        <rect x="14"  y="70" width="10"  height="6"  rx="1.5" fill="%s"/>
+        <rect x="124" y="70" width="10"  height="6"  rx="1.5" fill="%s"/>
+        <circle cx="52" cy="52" r="5" fill="%s"/>
+        <circle cx="96" cy="52" r="5" fill="%s"/>
+        <line x1="30" y1="58" x2="64" y2="60" stroke="%s" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+        <line x1="84" y1="60" x2="118" y2="58" stroke="%s" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+        <rect x="-10" y="142" width="168" height="10" rx="3" fill="%s"/>
+        <rect x="-18" y="148" width="22"  height="6"  rx="2" fill="%s"/>
+        <rect x="144" y="148" width="22"  height="6"  rx="2" fill="%s"/>
+      </svg>
+      <div style="font-size:26px;font-weight:700;color:#f0f0f0;letter-spacing:-1px;margin-top:-4px;font-family:system-ui,sans-serif;">CatRack</div>
+    </div>',
+                 color,color,color,color,light,light,color,darker,darker,light,light,light,light,light,light,deep,color,color))
+  }
+}
+
 # ── PAGE UI HELPER FUNCTIONS ─────────────────────────────────
 # Defined here in global.R so they are available to both
 # ui.R and server.R (split-file Shiny shares global.R only).
 
 login_page_ui <- function(mode = "login") {
   div(class = "ct-onboard-step",
-      div(class = "ct-logo", "CaTrack"),
+      # Catch Supabase password recovery token from URL hash on page load
+      tags$script(HTML('
+      (function() {
+        var h = window.location.hash + window.location.search;
+        if (h.indexOf("type=recovery") !== -1) {
+          document.addEventListener("DOMContentLoaded", function() {
+            setTimeout(function() {
+              Shiny.setInputValue("url_recovery_token", h, {priority:"event"});
+            }, 800);
+          });
+        }
+      })();
+    ')),
+      div(class = "ct-logo-wrap", catrack_logo_svg("full")),
       div(class = "ct-tagline", "Science-based training. Built around you."),
       
       div(class = "ct-auth-card",
@@ -472,7 +537,11 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
   }
   
   n_weeks      <- program$total_weeks
-  completed    <- if (!is.null(workouts)) sum(!is.na(workouts$completed_at)) else 0L
+  completed    <- if (!is.null(workouts) && "completed_at" %in% names(workouts)) {
+    sum(sapply(workouts$completed_at, function(x) {
+      isTRUE(!is.null(x) && !is.na(x) && nchar(as.character(x)) > 5)
+    }))
+  } else 0L
   total_wo     <- if (!is.null(workouts)) nrow(workouts) else 0L
   pct          <- if (total_wo > 0) round(100 * completed / total_wo) else 0L
   start        <- as.Date(program$start_date)
@@ -489,7 +558,7 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
           div(class = "ct-block-title", program$name)
         ),
         div(style = "text-align:right; font-size:12px; color:#888;",
-            div(style="font-size:20px; font-weight:700; color:#e8ff47;", paste0(pct, "%")),
+            div(style="font-size:20px; font-weight:700; color:#1D9E75;", paste0(pct, "%")),
             "complete")
     ),
     div(class = "ct-progress-bar",
@@ -512,25 +581,43 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
                 lapply(seq_len(nrow(week_workouts)), function(s) {
                   wo      <- week_workouts[s, ]
                   wo_date <- tryCatch(as.Date(wo$scheduled_date), error = \(e) NA)
-                  is_done  <- isTRUE(!is.na(wo$completed_at))
+                  # completed_at from Supabase is a string or NA
+                  # Must handle: NA, "NA", NULL, "", and real timestamps
+                  completed_val <- tryCatch(wo$completed_at, error = \(e) NA)
+                  is_done <- isTRUE(
+                    !is.null(completed_val) &&
+                      length(completed_val) > 0 &&
+                      !is.na(completed_val) &&
+                      nchar(as.character(completed_val)) > 5
+                  )
                   is_today <- isTRUE(!is.na(wo_date) && wo_date == current_date)
                   
                   card_class <- paste("ct-session-card",
                                       if (is_done) "completed" else if (is_today) "today" else "future")
                   
                   div(class = card_class,
-                      onclick = if (!is_done)
-                        sprintf("Shiny.setInputValue('open_workout','%s',{priority:'event'})",
-                                wo$id) else NULL,
+                      onclick = sprintf(
+                        "Shiny.setInputValue('open_workout','%s',{priority:'event'})",
+                        wo$id),
                       div(style="display:flex;justify-content:space-between;align-items:flex-start;",
                           div(div(class="ct-sess-label", paste0("DAY ", wo$session_number)),
                               div(class="ct-sess-type",  wo$session_label)),
                           if (is_done)  div(class="ct-sess-check", "✓")
-                          else if (is_today) div(style="color:#e8ff47;font-size:12px;", "TODAY")
+                          else if (is_today) div(style="color:#1D9E75;font-size:12px;font-weight:700;", "TODAY")
+                          else if (!is_done && !is.na(wo_date) && wo_date < Sys.Date())
+                            div(style="color:#555;font-size:10px;", "MISSED")
                           else NULL
                       ),
                       div(class="ct-sess-date",
-                          if (!is.na(wo_date)) format(wo_date, "%b %d") else "")
+                          if (!is.na(wo_date)) format(wo_date, "%b %d") else ""),
+                      if (!is_done && !is.na(wo_date) && wo_date >= Sys.Date())
+                        div(style="margin-top:5px;",
+                            tags$button("Skip",
+                                        style="font-size:10px;color:#555;background:none;border:none;
+                             cursor:pointer;padding:0;text-decoration:underline;",
+                                        onclick=sprintf(
+                                          "Shiny.setInputValue('skip_workout_prompt','%s|%s',{priority:'event'});event.stopPropagation();",
+                                          wo$id, wo$session_label)))
                   )
                 })
               } else {
@@ -556,5 +643,30 @@ bottom_nav_ui <- function(active = "dashboard") {
       nav_item("dashboard", "📅", "Program"),
       nav_item("progress",  "📊", "Progress"),
       nav_item("friends",   "🏆", "Friends")
+  )
+}
+
+# ── REDESIGN: Replace bottom_nav_ui with SVG icons ───────────
+# Overrides the function defined above
+nav_icon_program  <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><rect x="7" y="14" width="3" height="3" rx="0.5"/></svg>'
+nav_icon_progress <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>'
+nav_icon_friends  <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/></svg>'
+nav_icon_profile  <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>'
+
+bottom_nav_ui <- function(active = "dashboard") {
+  nav_item <- function(id, icon_svg, label) {
+    is_active <- identical(as.character(active %||% ""), id)
+    tags$button(
+      class   = trimws(paste("ct-nav-btn", if (is_active) "active" else "")),
+      onclick = sprintf("Shiny.setInputValue('nav_tab','%s',{priority:'event'})", id),
+      HTML(icon_svg),
+      label
+    )
+  }
+  div(class = "ct-bottom-nav",
+      nav_item("dashboard", nav_icon_program,  "Program"),
+      nav_item("progress",  nav_icon_progress, "Progress"),
+      nav_item("friends",   nav_icon_friends,  "Friends"),
+      nav_item("profile",   nav_icon_profile,  "Profile")
   )
 }

@@ -43,6 +43,19 @@ server <- function(input, output, session) {
     group_members      = NULL,
     invite_code        = NULL,
     
+    # Profile editing
+    profile_edit        = list(),
+    recovery_token      = NULL,
+    pw_reset_error      = NULL,
+    streak              = NULL,
+    
+    # Programs management
+    all_programs        = NULL,
+    rename_program_id   = NULL,
+    rename_current_name = NULL,
+    skip_workout_id     = NULL,
+    skip_session_label  = NULL,
+    
     # Active workout
     active_workout_id  = NULL,
     active_workout     = NULL,
@@ -90,7 +103,11 @@ server <- function(input, output, session) {
                                          rv$program$id), token = rv$token)
         rv$workouts <- if (safe_nrow(workouts) > 0) workouts else NULL
       }
+      # Pre-load all programs for the programs page
+      rv$all_programs <- tryCatch(
+        fetch_all_programs(rv$user_id, rv$token), error = \(e) NULL)
       
+      rv$streak  <- calculate_streak(rv$workouts, rv$program)
       rv$page    <- "dashboard"
       rv$nav_tab <- "dashboard"
       
@@ -99,6 +116,29 @@ server <- function(input, output, session) {
       message("load_user_data error: ", conditionMessage(e))
       # If we at least have a token, show dashboard with empty state
       rv$page <- if (is.null(rv$profile)) "onboarding" else "dashboard"
+    })
+  }
+  
+  # ── Helper: refresh just the workouts list ─────────────────
+  # Call this any time a workout status changes
+  refresh_workouts <- function() {
+    req(rv$token, rv$program)
+    tryCatch({
+      workouts <- sb_select("workouts",
+                            sprintf("?program_id=eq.%s&order=week_number,session_number",
+                                    rv$program$id),
+                            token = rv$token)
+      rv$workouts <- if (safe_nrow(workouts) > 0) workouts else NULL
+      message(sprintf("Workouts refreshed: %d rows, %d completed",
+                      safe_nrow(rv$workouts),
+                      if (!is.null(rv$workouts) && "completed_at" %in% names(rv$workouts))
+                        sum(!is.na(rv$workouts$completed_at) &
+                              nchar(as.character(rv$workouts$completed_at)) > 5)
+                      else 0L))
+      # Recalculate streak any time workouts update
+      rv$streak <- calculate_streak(rv$workouts, rv$program)
+    }, error = function(e) {
+      message("refresh_workouts error: ", conditionMessage(e))
     })
   }
   
@@ -337,12 +377,27 @@ server <- function(input, output, session) {
     page_content <- switch(page,
                            
                            "dashboard" = div(class = "ct-content-with-nav",
-                                             div(style = "display:flex; justify-content:space-between;
-                     align-items:center; margin-bottom:16px;",
-                                                 div(class = "ct-logo", style = "margin:0; font-size:22px;", "CaTrack"),
-                                                 div(style = "font-size:13px; color:#666;",
-                                                     rv$profile$display_name %||% rv$user_email)
+                                             div(class = "ct-dash-header",
+                                                 div(style = "display:flex; align-items:center; gap:10px;",
+                                                     catrack_logo_svg("icon"),
+                                                     div(
+                                                       div(style = "font-size:16px; font-weight:700; color:#f0f0f0;
+                           letter-spacing:-0.5px; line-height:1.2;", "CatRack"),
+                                                       div(style = "font-size:11px; color:#555;",
+                                                           rv$profile$display_name %||% rv$user_email)
+                                                     )
+                                                 ),
+                                                 div(style = "text-align:right;",
+                                                     div(style = "font-size:10px; color:#555; text-transform:uppercase;
+                         letter-spacing:0.06em;", "Block"),
+                                                     div(style = "font-size:13px; color:#5DCAA5; font-weight:600;",
+                                                         if (!is.null(rv$program))
+                                                           paste0(rv$program$block_number, " of 3")
+                                                         else "—")
+                                                 )
                                              ),
+                                             # Streak badge (shown when streak > 0)
+                                             streak_badge_ui(rv$streak),
                                              dashboard_page_ui(rv$program, rv$workouts)
                            ),
                            
@@ -378,6 +433,8 @@ server <- function(input, output, session) {
                                             progress_screen_ui(
                                               logs              = rv$all_logs,
                                               prs               = rv$prs,
+                                              program           = rv$program,
+                                              workouts          = rv$workouts,
                                               selected_exercise = rv$selected_exercise
                                             )
                            ),
@@ -391,6 +448,30 @@ server <- function(input, output, session) {
                                            )
                            ),
                            
+                           "programs" = div(class = "ct-content-with-nav",
+                                            programs_page_ui(
+                                              active_program      = if (!is.null(rv$all_programs) && nrow(rv$all_programs) > 0)
+                                                rv$all_programs[rv$all_programs$is_active == TRUE, ][1, ] else NULL,
+                                              all_programs        = rv$all_programs,
+                                              rename_program_id   = rv$rename_program_id,
+                                              rename_current_name = rv$rename_current_name
+                                            ),
+                                            if (!is.null(rv$skip_workout_id))
+                                              skip_modal_ui(rv$skip_workout_id, rv$skip_session_label %||% "Session")
+                           ),
+                           
+                           "password_reset" = div(style = "padding:20px;",
+                                                  password_reset_ui(error_msg = rv$pw_reset_error)
+                           ),
+                           
+                           "profile" = div(class = "ct-content-with-nav",
+                                           profile_page_ui(
+                                             profile    = rv$profile,
+                                             user_email = rv$user_email,
+                                             program    = rv$program
+                                           )
+                           ),
+                           
                            # Default
                            div("Loading...")
     )
@@ -401,6 +482,8 @@ server <- function(input, output, session) {
   # ── Workout screen setup ────────────────────────────────────
   setup_workout_server(input, output, session, rv)
   setup_progress_server(input, output, session, rv)
+  setup_program_server(input, output, session, rv)
+  setup_profile_server(input, output, session, rv)
   
   # ── Timer JS handler output ──────────────────────────────────
   output$timer_js <- renderUI({
@@ -411,15 +494,50 @@ server <- function(input, output, session) {
     ))
   })
   
+  # ── Logout ─────────────────────────────────────────────────
+  observeEvent(input$logout, {
+    rv$token        <- NULL
+    rv$user_id      <- NULL
+    rv$user_email   <- NULL
+    rv$profile      <- NULL
+    rv$program      <- NULL
+    rv$workouts     <- NULL
+    rv$all_logs     <- NULL
+    rv$prs          <- NULL
+    rv$leaderboard   <- NULL
+    rv$group_members <- NULL
+    rv$invite_code   <- NULL
+    rv$all_programs  <- NULL
+    rv$streak        <- NULL
+    rv$profile_edit  <- list()
+    rv$recovery_token <- NULL
+    rv$pw_reset_error <- NULL
+    rv$set_logs     <- list()
+    rv$auth_mode    <- "login"
+    rv$auth_error   <- NULL
+    rv$page         <- "login"
+    rv$nav_tab      <- "dashboard"
+  })
+  
+  # ── Profile tab nav ─────────────────────────────────────────
+  observeEvent(input$nav_tab, {
+    rv$nav_tab <- input$nav_tab
+    rv$page    <- input$nav_tab
+    # Sync equipment from profile when opening profile page
+    if (input$nav_tab == "profile" && !is.null(rv$profile)) {
+      rv$ob_equipment <- tryCatch(
+        rv$profile$equipment_available[[1]],
+        error = \(e) rv$ob_equipment)
+      rv$profile_edit <- list()  # reset edits
+    }
+  })
+  
   # ── Auto-refresh workouts every 30s when on dashboard ──────
   autoInvalidate <- reactiveTimer(30000)
   observe({
     autoInvalidate()
     if (!is.null(rv$token) && rv$page == "dashboard" && !is.null(rv$program)) {
-      workouts <- sb_select("workouts",
-                            sprintf("?program_id=eq.%s&order=week_number,session_number",
-                                    rv$program$id), token = rv$token)
-      rv$workouts <- workouts
+      refresh_workouts()
     }
   })
 }

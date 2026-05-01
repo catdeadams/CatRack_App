@@ -103,6 +103,10 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
   }
   
   wo        <- if (is.data.frame(workout)) workout[1, ] else workout
+  is_review <- isTRUE(
+    !is.null(wo$completed_at) && !is.na(wo$completed_at) &&
+      nchar(as.character(wo$completed_at)) > 5
+  )
   n_ex      <- nrow(exercises)
   completed <- sum(sapply(seq_len(n_ex), function(i) {
     we_id <- exercises$id[i]
@@ -137,6 +141,23 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
     # Session progress bar
     div(class = "ct-progress-bar",
         div(class = "ct-progress-fill", style = sprintf("width:%d%%", pct))),
+    
+    # ── Review mode banner ────────────────────────────────
+    if (is_review)
+      div(style = "background:#061a12; border:1px solid #0F6E56; border-radius:8px;
+                   padding:10px 14px; margin-bottom:12px;
+                   display:flex; align-items:center; gap:10px;",
+          div(style = "color:#4ade80; font-size:16px;", "✓"),
+          div(
+            div(style = "font-size:13px; font-weight:600; color:#4ade80;",
+                "Session Complete — Review Mode"),
+            div(style = "font-size:11px; color:#555; margin-top:2px;",
+                tryCatch(
+                  paste0("Completed ", format(as.POSIXct(wo$completed_at), "%b %d at %I:%M %p")),
+                  error = \(e) "Previously completed"
+                ))
+          )
+      ),
     
     # ── Rest timer ─────────────────────────────────────────
     div(id = "rest-timer-section",
@@ -235,9 +256,9 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
           
           # Coaching tip
           if (!is.null(note_tip))
-            div(style = "background:#1e2200; border-left:3px solid #e8ff47;
+            div(style = "background:#061a12; border-left:2px solid #1D9E75;
                        border-radius:0 6px 6px 0; padding:7px 10px;
-                       font-size:11px; color:#999; margin-bottom:10px;
+                       font-size:11px; color:#5DCAA5; margin-bottom:10px;
                        line-height:1.4;",
                 note_tip),
           
@@ -304,7 +325,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                 div(style = paste0(
                   "display:grid; grid-template-columns:30px 1fr 1fr 60px 32px;",
                   "gap:4px; align-items:center; padding:4px 2px;",
-                  if (is_logged) "background:#0a1a0a; border-radius:6px;" else ""),
+                  if (is_logged) "background:#061a12; border-radius:6px;" else ""),
                   
                   # Set number
                   div(style = paste0("font-size:13px; font-weight:700; text-align:center; ",
@@ -320,8 +341,8 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                       as.character(last$weight_lbs) else "lbs",
                     min         = "0", step = "2.5",
                     style       = paste0(
-                      "background:", if (is_logged) "#0f2a0f" else "#1e1e1e", ";",
-                      "border:1.5px solid ", if (is_logged) "#4ade80" else "#2a2a2a", ";",
+                      "background:", if (is_logged) "#061a12" else "#161616", ";",
+                      "border:1.5px solid ", if (is_logged) "#0F6E56" else "#262626", ";",
                       "color:#f0f0f0; border-radius:8px; padding:7px 8px;",
                       "font-size:13px; width:100%; box-sizing:border-box;"),
                     class = "ct-set-input",
@@ -338,8 +359,8 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                     placeholder = as.character(we$rep_range_low),
                     min         = "0", step = "1",
                     style       = paste0(
-                      "background:", if (is_logged) "#0f2a0f" else "#1e1e1e", ";",
-                      "border:1.5px solid ", if (is_logged) "#4ade80" else "#2a2a2a", ";",
+                      "background:", if (is_logged) "#061a12" else "#161616", ";",
+                      "border:1.5px solid ", if (is_logged) "#0F6E56" else "#262626", ";",
                       "color:#f0f0f0; border-radius:8px; padding:7px 8px;",
                       "font-size:13px; width:100%; box-sizing:border-box;"),
                     class = "ct-set-input",
@@ -356,8 +377,8 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                     placeholder = as.character(as.integer(we$rpe_target)),
                     min         = "0", max = "10", step = "1",
                     style       = paste0(
-                      "background:", if (is_logged) "#0f2a0f" else "#1e1e1e", ";",
-                      "border:1.5px solid ", if (is_logged) "#4ade80" else "#2a2a2a", ";",
+                      "background:", if (is_logged) "#061a12" else "#161616", ";",
+                      "border:1.5px solid ", if (is_logged) "#0F6E56" else "#262626", ";",
                       "color:#f0f0f0; border-radius:8px; padding:7px 8px;",
                       "font-size:13px; width:100%; box-sizing:border-box;"),
                     `data-we-id` = we$id,
@@ -371,7 +392,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                   else
                     tags$button("✓",
                                 style = paste0(
-                                  "background:#e8ff47; color:#000; border:none; border-radius:8px;",
+                                  "background:#1D9E75; color:#fff; border:none; border-radius:8px;",
                                   "font-size:16px; font-weight:700; cursor:pointer;",
                                   "width:32px; height:32px; display:flex;",
                                   "align-items:center; justify-content:center;"),
@@ -399,15 +420,23 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
       )
     }),
     
-    # ── Finish session button ───────────────────────────────
+    # ── Action buttons (context-aware) ──────────────────────
     div(style = "margin-top:16px;",
-        tags$button("Finish Session 🏁",
-                    class = "ct-btn-primary",
-                    onclick = "Shiny.setInputValue('finish_session', Math.random(), {priority:'event'})"),
-        tags$button("Cancel",
-                    class = "ct-btn-secondary",
-                    style = "margin-top:8px;",
-                    onclick = "Shiny.setInputValue('close_workout', Math.random(), {priority:'event'})")
+        if (is_review) {
+          tags$button("← Back to Calendar",
+                      class = "ct-btn-secondary",
+                      onclick = "Shiny.setInputValue('close_workout', Math.random(), {priority:'event'})")
+        } else {
+          tagList(
+            tags$button("Finish Session",
+                        class = "ct-btn-primary",
+                        onclick = "Shiny.setInputValue('finish_session', Math.random(), {priority:'event'})"),
+            tags$button("Cancel",
+                        class = "ct-btn-secondary",
+                        style = "margin-top:8px;",
+                        onclick = "Shiny.setInputValue('close_workout', Math.random(), {priority:'event'})")
+          )
+        }
     )
   )
 }
@@ -502,10 +531,45 @@ setup_workout_server <- function(input, output, session, rv) {
       }
     })
     
-    # Initialise set log reactive storage
+    # ── Load existing set logs from Supabase ──────────────────
+    # This is the critical fix: always reload logs from DB so
+    # re-opening a workout shows previously logged sets.
     rv$set_logs <- list()
-    rv$swap_we_id    <- NULL
-    rv$swap_ex_id    <- NULL
+    
+    if (!is.null(data) && !is.null(data$exercises) &&
+        nrow(data$exercises) > 0) {
+      
+      we_ids <- paste(data$exercises$id, collapse = ",")
+      
+      existing <- tryCatch(
+        sb_select("workout_set_logs",
+                  sprintf(
+                    "?user_id=eq.%s&workout_exercise_id=in.(%s)&order=set_number",
+                    rv$user_id, we_ids),
+                  token = rv$token),
+        error = \(e) NULL)
+      
+      if (!is.null(existing) && nrow(existing) > 0) {
+        for (i in seq_len(nrow(existing))) {
+          row    <- existing[i, ]
+          we_id  <- row$workout_exercise_id
+          set_n  <- as.integer(row$set_number)
+          if (is.null(rv$set_logs[[we_id]])) rv$set_logs[[we_id]] <- list()
+          rv$set_logs[[we_id]][[set_n]] <- list(
+            weight_lbs     = row$weight_lbs,
+            reps_completed = row$reps_completed,
+            rpe_actual     = row$rpe_actual,
+            notes          = row$notes,
+            set_number     = set_n
+          )
+        }
+        message(sprintf("Loaded %d existing set logs for workout %s",
+                        nrow(existing), rv$active_workout_id))
+      }
+    }
+    
+    rv$swap_we_id       <- NULL
+    rv$swap_ex_id       <- NULL
     rv$swap_suggestions <- NULL
   })
   
@@ -586,12 +650,21 @@ setup_workout_server <- function(input, output, session, rv) {
     if (is.null(rv$active_workout_id)) return()
     
     # Mark workout as completed
+    duration_mins <- tryCatch(
+      if (!is.null(rv$session_start_time))
+        as.integer(as.numeric(Sys.time() - rv$session_start_time, units = "mins"))
+      else NA_integer_,
+      error = \(e) NA_integer_)
+    
+    update_data <- list(completed_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ"))
+    if (!is.na(duration_mins)) update_data$duration_minutes <- duration_mins
+    
     resp <- sb_update("workouts",
                       sprintf("?id=eq.%s", rv$active_workout_id),
-                      list(completed_at    = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ"),
-                           duration_minutes = as.integer(
-                             as.numeric(Sys.time() - rv$session_start_time, units = "mins"))),
+                      update_data,
                       token = rv$token)
+    
+    message(sprintf("Finish session response: %d", resp$status_code))
     
     showNotification("Session complete! Great work 💪", type = "message", duration = 4)
     
@@ -599,13 +672,23 @@ setup_workout_server <- function(input, output, session, rv) {
     rv$all_logs <- NULL
     rv$prs      <- NULL
     
-    # Reload workouts and go to dashboard
-    workouts <- sb_select("workouts",
-                          sprintf("?program_id=eq.%s&order=week_number,session_number", rv$program$id),
-                          token = rv$token)
-    rv$workouts <- workouts
-    rv$page     <- "dashboard"
-    rv$nav_tab  <- "dashboard"
+    # Reload workouts so calendar reflects completion
+    # Small delay to let Supabase write propagate
+    Sys.sleep(0.3)
+    tryCatch({
+      workouts <- sb_select("workouts",
+                            sprintf("?program_id=eq.%s&order=week_number,session_number",
+                                    rv$program$id),
+                            token = rv$token)
+      if (safe_nrow(workouts) > 0) rv$workouts <- workouts
+    }, error = \(e) message("Reload workouts error: ", e$message))
+    
+    rv$active_workout_id <- NULL
+    rv$active_workout    <- NULL
+    rv$active_exercises  <- NULL
+    rv$set_logs          <- list()
+    rv$page              <- "dashboard"
+    rv$nav_tab           <- "dashboard"
   })
   
   # ── Exercise swap ───────────────────────────────────────────
