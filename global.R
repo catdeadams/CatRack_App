@@ -143,6 +143,12 @@ sb_update <- function(table, filter_params, data, token = NULL) {
     req_perform()
 }
 
+sb_delete <- function(table, filter_params, token = NULL) {
+  .sb_req(paste0(table, filter_params), token) |>
+    req_method("DELETE") |>
+    req_perform()
+}
+
 # ── CONSTANTS ────────────────────────────────────────────────
 
 GOALS <- list(

@@ -92,11 +92,19 @@ program_card_ui <- function(prog, is_active = FALSE, prs = NULL) {
     # Action buttons
     div(style = "display:flex; gap:6px;",
       if (is_active) {
-        tags$button("Rename",
-          style = "flex:1; background:#1e1e1e; color:#aaa; border:1px solid #262626;
-                   border-radius:8px; padding:8px; font-size:12px; cursor:pointer;",
-          onclick = sprintf(
-            "Shiny.setInputValue('rename_program','%s',{priority:'event'})", prog$program_id))
+        tagList(
+          tags$button("Rename",
+            style = "flex:1; background:#1e1e1e; color:#aaa; border:1px solid #262626;
+                     border-radius:8px; padding:8px; font-size:12px; cursor:pointer;",
+            onclick = sprintf(
+              "Shiny.setInputValue('rename_program','%s',{priority:'event'})", prog$program_id)),
+          tags$button("Delete",
+            style = "background:#1a0808; color:#f87171; border:1px solid #3d1515;
+                     border-radius:8px; padding:8px 12px; font-size:12px; cursor:pointer;",
+            onclick = sprintf(
+              "Shiny.setInputValue('delete_program','%s|%s',{priority:'event'})",
+              prog$program_id, gsub("'", "", name, fixed = TRUE)))
+        )
       } else {
         tagList(
           tags$button("Re-activate",
@@ -111,7 +119,13 @@ program_card_ui <- function(prog, is_active = FALSE, prs = NULL) {
                      border-radius:8px; padding:8px 12px; font-size:12px; cursor:pointer;",
             onclick = sprintf(
               "Shiny.setInputValue('rename_program','%s',{priority:'event'})",
-              prog$program_id))
+              prog$program_id)),
+          tags$button("Delete",
+            style = "background:#1a0808; color:#f87171; border:1px solid #3d1515;
+                     border-radius:8px; padding:8px 10px; font-size:12px; cursor:pointer;",
+            onclick = sprintf(
+              "Shiny.setInputValue('delete_program','%s|%s',{priority:'event'})",
+              prog$program_id, gsub("'", "", name, fixed = TRUE)))
         )
       }
     )
@@ -161,6 +175,37 @@ rename_modal_ui <- function(program_id, current_name) {
   )
 }
 
+# ── DELETE CONFIRMATION MODAL ────────────────────────────────
+
+delete_program_modal_ui <- function(program_id, program_name) {
+  div(style = "position:fixed; top:0; left:0; right:0; bottom:0;
+               background:rgba(0,0,0,0.85); z-index:200;
+               display:flex; align-items:flex-end; justify-content:center;",
+    div(style = "background:#161616; border-radius:16px 16px 0 0; border:1px solid #222;
+                 width:100%; max-width:480px; padding:24px;",
+      div(style = "font-size:16px; font-weight:700; color:#f87171; margin-bottom:6px;",
+          "Delete program?"),
+      div(style = "font-size:14px; font-weight:600; color:#f0f0f0; margin-bottom:4px;",
+          program_name),
+      div(style = "font-size:12px; color:#555; margin-bottom:20px; line-height:1.5;",
+          "This permanently deletes the program and all its workouts and logged sets. This cannot be undone."),
+      div(style = "display:flex; gap:8px;",
+        tags$button("Cancel",
+          style = "flex:1; background:#1e1e1e; color:#aaa; border:1px solid #262626;
+                   border-radius:8px; padding:12px; cursor:pointer; font-size:14px;",
+          onclick = "Shiny.setInputValue('cancel_delete_program', 1, {priority:'event'})"),
+        tags$button("Delete permanently",
+          style = "flex:1; background:#2d0f0f; color:#f87171; border:1px solid #3d1515;
+                   border-radius:8px; padding:12px; font-weight:700; cursor:pointer;
+                   font-size:14px;",
+          onclick = sprintf(
+            "Shiny.setInputValue('confirm_delete_program','%s',{priority:'event'})",
+            program_id))
+      )
+    )
+  )
+}
+
 # ── SKIP CONFIRMATION MODAL ───────────────────────────────────
 
 skip_modal_ui <- function(workout_id, session_label) {
@@ -195,7 +240,9 @@ skip_modal_ui <- function(workout_id, session_label) {
 
 programs_page_ui <- function(active_program, all_programs,
                               rename_program_id = NULL,
-                              rename_current_name = NULL) {
+                              rename_current_name = NULL,
+                              delete_program_id = NULL,
+                              delete_program_name = NULL) {
 
   tagList(
     div(style = "margin-bottom:16px;",
@@ -206,6 +253,10 @@ programs_page_ui <- function(active_program, all_programs,
     # Rename modal (if active)
     if (!is.null(rename_program_id))
       rename_modal_ui(rename_program_id, rename_current_name %||% ""),
+
+    # Delete confirmation modal (if active)
+    if (!is.null(delete_program_id))
+      delete_program_modal_ui(delete_program_id, delete_program_name %||% "Program"),
 
     # Active program card
     if (!is.null(active_program)) {
@@ -328,6 +379,82 @@ setup_program_server <- function(input, output, session, rv) {
     }
     rv$rename_program_id   <- NULL
     rv$rename_current_name <- NULL
+  })
+
+  # ── Delete program ────────────────────────────────────────
+  observeEvent(input$delete_program, {
+    parts <- strsplit(input$delete_program, "\\|")[[1]]
+    if (length(parts) < 1) return()
+    rv$delete_program_id   <- parts[1]
+    rv$delete_program_name <- paste(parts[-1], collapse = "|")
+  })
+
+  observeEvent(input$cancel_delete_program, {
+    rv$delete_program_id   <- NULL
+    rv$delete_program_name <- NULL
+  })
+
+  observeEvent(input$confirm_delete_program, {
+    req(rv$token, rv$user_id)
+    pid <- input$confirm_delete_program
+
+    tryCatch({
+      # Step through the cascade: set_logs → workout_exercises → workouts → program
+      wkts <- sb_select("workouts",
+        sprintf("?program_id=eq.%s&select=id", pid),
+        token = rv$token)
+
+      if (!is.null(wkts) && nrow(wkts) > 0) {
+        wkt_ids <- paste(wkts$id, collapse = ",")
+
+        wes <- sb_select("workout_exercises",
+          sprintf("?workout_id=in.(%s)&select=id", wkt_ids),
+          token = rv$token)
+
+        if (!is.null(wes) && nrow(wes) > 0) {
+          we_ids <- paste(wes$id, collapse = ",")
+          sb_delete("workout_set_logs",
+            sprintf("?workout_exercise_id=in.(%s)", we_ids),
+            token = rv$token)
+        }
+
+        sb_delete("workout_exercises",
+          sprintf("?workout_id=in.(%s)", wkt_ids),
+          token = rv$token)
+
+        sb_delete("workouts",
+          sprintf("?program_id=eq.%s", pid),
+          token = rv$token)
+      }
+
+      resp <- sb_delete("programs",
+        sprintf("?id=eq.%s", pid),
+        token = rv$token)
+
+      if (resp$status_code %in% c(200, 201, 204)) {
+        was_active <- !is.null(rv$program) && rv$program$id == pid
+
+        rv$all_programs <- tryCatch(
+          fetch_all_programs(rv$user_id, rv$token), error = \(e) NULL)
+
+        if (was_active) {
+          rv$program  <- NULL
+          rv$workouts <- NULL
+          rv$streak   <- NULL
+          rv$page     <- "dashboard"
+          rv$nav_tab  <- "dashboard"
+        }
+
+        showNotification("Program deleted.", type = "message", duration = 3)
+      } else {
+        showNotification("Error deleting program.", type = "error")
+      }
+    }, error = function(e) {
+      showNotification(paste("Error:", conditionMessage(e)), type = "error")
+    })
+
+    rv$delete_program_id   <- NULL
+    rv$delete_program_name <- NULL
   })
 
   # ── Re-activate past program ──────────────────────────────
