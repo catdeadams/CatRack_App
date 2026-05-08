@@ -9,10 +9,23 @@
 rest_timer_js <- "
 var catrackTimer = null;
 var catrackSeconds = 0;
+var catrackTotal = 0;
+
+function showTimerSection() {
+  var el = document.getElementById('rest-timer-section');
+  if (el) el.style.display = 'flex';
+}
+
+function hideTimerSection() {
+  var el = document.getElementById('rest-timer-section');
+  if (el) el.style.display = 'none';
+}
 
 function startRestTimer(seconds) {
   clearInterval(catrackTimer);
   catrackSeconds = seconds;
+  catrackTotal   = seconds;
+  showTimerSection();
   updateTimerDisplay();
   catrackTimer = setInterval(function() {
     catrackSeconds--;
@@ -23,22 +36,24 @@ function startRestTimer(seconds) {
       document.getElementById('rest-timer-display').innerText = 'Rest done!';
       document.getElementById('rest-timer-display').style.color = '#4ade80';
       if (navigator.vibrate) { navigator.vibrate([300, 100, 300]); }
+      setTimeout(hideTimerSection, 3000);
     }
   }, 1000);
 }
 
 function updateTimerDisplay() {
-  var m = Math.floor(catrackSeconds / 60);
-  var s = catrackSeconds % 60;
-  var pct = 100;
+  var m   = Math.floor(catrackSeconds / 60);
+  var s   = catrackSeconds % 60;
+  var pct = catrackTotal > 0 ? Math.round(100 * catrackSeconds / catrackTotal) : 100;
   document.getElementById('rest-timer-display').innerText =
     m + ':' + (s < 10 ? '0' : '') + s;
   document.getElementById('rest-timer-display').style.color = '#e8ff47';
+  document.getElementById('rest-timer-bar').style.width = pct + '%';
 }
 
 function stopTimer() {
   clearInterval(catrackTimer);
-  document.getElementById('rest-timer-display').innerText = 'Resting...';
+  hideTimerSection();
 }
 "
 
@@ -139,26 +154,42 @@ fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) 
 # ── EXERCISEDB GIF HELPERS ───────────────────────────────────
 
 # Calls ExerciseDB API (RapidAPI) to find a GIF URL for the given exercise name.
-# Returns the gifUrl string or NULL on failure / no match.
+# Tries progressively shorter queries so "Barbell Back Squat" → "back squat" → "squat".
 fetch_exercise_gif <- function(exercise_name, api_key) {
   if (is.null(api_key) || nchar(api_key) == 0) return(NULL)
-  encoded <- utils::URLencode(tolower(trimws(exercise_name)), reserved = TRUE)
-  resp <- tryCatch(
-    request(paste0("https://exercisedb.p.rapidapi.com/exercises/name/", encoded)) |>
-      req_headers(
-        "X-RapidAPI-Key"  = api_key,
-        "X-RapidAPI-Host" = "exercisedb.p.rapidapi.com"
-      ) |>
-      req_error(is_error = \(r) FALSE) |>
-      req_perform(),
-    error = \(e) NULL)
-  if (is.null(resp) || resp$status_code != 200) return(NULL)
-  data <- tryCatch(fromJSON(resp_body_string(resp), simplifyDataFrame = TRUE),
-                   error = \(e) NULL)
-  if (is.null(data) || !is.data.frame(data) || nrow(data) == 0) return(NULL)
-  gif <- tryCatch(data$gifUrl[1], error = \(e) NULL)
-  if (is.null(gif) || is.na(gif) || nchar(gif) == 0) return(NULL)
-  gif
+
+  try_query <- function(q) {
+    encoded <- utils::URLencode(tolower(trimws(q)), reserved = TRUE)
+    resp <- tryCatch(
+      request(paste0("https://exercisedb.p.rapidapi.com/exercises/name/", encoded)) |>
+        req_headers("X-RapidAPI-Key"  = api_key,
+                    "X-RapidAPI-Host" = "exercisedb.p.rapidapi.com") |>
+        req_error(is_error = \(r) FALSE) |>
+        req_perform(),
+      error = \(e) NULL)
+    if (is.null(resp) || resp$status_code != 200) return(NULL)
+    data <- tryCatch(fromJSON(resp_body_string(resp), simplifyDataFrame = TRUE),
+                     error = \(e) NULL)
+    if (is.null(data) || !is.data.frame(data) || nrow(data) == 0) return(NULL)
+    gif <- tryCatch(data$gifUrl[1], error = \(e) NULL)
+    if (is.null(gif) || is.na(gif) || nchar(gif) == 0) return(NULL)
+    gif
+  }
+
+  # Build a cascade: full name → drop first word → drop first two words → last word only
+  words    <- strsplit(trimws(exercise_name), "\\s+")[[1]]
+  queries  <- unique(c(
+    exercise_name,
+    if (length(words) > 2) paste(words[-1], collapse = " "),
+    if (length(words) > 1) paste(tail(words, 2), collapse = " "),
+    tail(words, 1)
+  ))
+
+  for (q in queries) {
+    result <- try_query(q)
+    if (!is.null(result)) return(result)
+  }
+  NULL
 }
 
 # Persists the fetched URL into the exercises table so future loads skip the API.
@@ -237,21 +268,21 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
           )
       ),
     
-    # ── Rest timer ─────────────────────────────────────────
+    # ── Rest timer — hidden until a set is logged ──────────
     div(id = "rest-timer-section",
         style = "background:#1a1a1a; border-radius:10px; padding:12px 16px;
-                 margin:12px 0; display:flex; align-items:center; gap:12px;",
+                 margin:12px 0; display:none; align-items:center; gap:12px;",
         div(style = "font-size:20px;", "⏱"),
         div(style = "flex:1;",
             div(id = "rest-timer-display",
-                style = "font-size:22px; font-weight:700; color:#555;", "Resting..."),
+                style = "font-size:22px; font-weight:700; color:#e8ff47;", ""),
             div(style = "background:#2a2a2a; border-radius:3px; height:3px; margin-top:4px;",
                 div(id = "rest-timer-bar",
                     style = "height:100%; background:#e8ff47; border-radius:3px;
-                       width:0%; transition:width 0.5s;"))
+                       width:100%; transition:width 1s linear;"))
         ),
-        tags$button("Skip", class = "ct-btn-secondary ct-btn-sm",
-                    style = "width:50px; font-size:11px;",
+        tags$button("Skip rest", class = "ct-btn-secondary ct-btn-sm",
+                    style = "white-space:nowrap; font-size:11px;",
                     onclick = "stopTimer()")
     ),
     

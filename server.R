@@ -57,6 +57,8 @@ server <- function(input, output, session) {
     all_programs        = NULL,
     rename_program_id   = NULL,
     rename_current_name = NULL,
+    delete_program_id   = NULL,
+    delete_program_name = NULL,
     skip_workout_id     = NULL,
     skip_session_label  = NULL,
     
@@ -482,7 +484,9 @@ server <- function(input, output, session) {
                                                 rv$all_programs[rv$all_programs$is_active == TRUE, ][1, ] else NULL,
                                               all_programs        = rv$all_programs,
                                               rename_program_id   = rv$rename_program_id,
-                                              rename_current_name = rv$rename_current_name
+                                              rename_current_name = rv$rename_current_name,
+                                              delete_program_id   = rv$delete_program_id,
+                                              delete_program_name = rv$delete_program_name
                                             ),
                                             if (!is.null(rv$skip_workout_id))
                                               skip_modal_ui(rv$skip_workout_id, rv$skip_session_label %||% "Session")
@@ -540,6 +544,8 @@ server <- function(input, output, session) {
     rv$hidden_exercises <- character(0)
     rv$activity_feed    <- NULL
     rv$all_programs     <- NULL
+    rv$delete_program_id   <- NULL
+    rv$delete_program_name <- NULL
     rv$streak           <- NULL
     rv$profile_edit   <- list()
     rv$recovery_token <- NULL
