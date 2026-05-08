@@ -28,11 +28,13 @@ for (f in c("program_generation.R", "workout_screen.R", "progress_screen.R", "pr
 #   SUPABASE_ANON_KEY
 #   SUPABASE_SERVICE_KEY
 #   ANTHROPIC_API_KEY
+#   EXERCISEDB_API_KEY   (RapidAPI key for ExerciseDB — optional, enables GIF demos)
 
 SUPABASE_URL         <- Sys.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY    <- Sys.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY")
 ANTHROPIC_API_KEY    <- Sys.getenv("ANTHROPIC_API_KEY")
+EXERCISEDB_API_KEY   <- Sys.getenv("EXERCISEDB_API_KEY")
 
 # Warn loudly at startup if any required key is missing
 missing_keys <- c("SUPABASE_URL","SUPABASE_ANON_KEY","SUPABASE_SERVICE_KEY")[

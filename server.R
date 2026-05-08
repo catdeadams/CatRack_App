@@ -42,6 +42,10 @@ server <- function(input, output, session) {
     leaderboard        = NULL,
     group_members      = NULL,
     invite_code        = NULL,
+    member_streaks     = NULL,
+    member_1rm         = NULL,
+    hidden_exercises   = character(0),
+    activity_feed      = NULL,
     
     # Profile editing
     profile_edit        = list(),
@@ -65,7 +69,9 @@ server <- function(input, output, session) {
     swap_we_id         = NULL,
     swap_ex_id         = NULL,
     swap_suggestions   = NULL,
-    session_start_time = NULL
+    session_start_time = NULL,
+    exercise_gifs      = list(),  # exercise_id -> gif_url, session cache
+    exercise_history   = list()   # exercise_id -> data.frame of recent sessions
   )
   
   # ── Helper: safe nrow that never returns NULL ───────────────
@@ -85,11 +91,19 @@ server <- function(input, output, session) {
       profile    <- sb_select("user_profiles",
                               sprintf("?id=eq.%s", rv$user_id), token = rv$token)
       rv$profile <- if (safe_nrow(profile) > 0) profile[1, ] else NULL
-      
+
       if (is.null(rv$profile)) {
         rv$page <- "onboarding"
         return()
       }
+
+      rv$hidden_exercises <- tryCatch({
+        raw <- rv$profile$hidden_from_leaderboard
+        if (!is.null(raw) && length(raw) > 0) {
+          vals <- unlist(raw)
+          vals[!is.na(vals) & nchar(vals) > 0]
+        } else character(0)
+      }, error = \(e) character(0))
       
       # Load active program
       program    <- sb_select("programs",
@@ -410,7 +424,9 @@ server <- function(input, output, session) {
                                                  exercises     = rv$active_exercises,
                                                  last_perf_map = rv$last_perf_map,
                                                  set_logs_rv   = rv$set_logs,
-                                                 timer_active  = FALSE
+                                                 timer_active  = FALSE,
+                                                 gif_map       = rv$exercise_gifs,
+                                                 history_map   = rv$exercise_history
                                                ),
                                                if (!is.null(rv$swap_we_id))
                                                  swap_modal_ui(rv$swap_we_id, rv$swap_ex_id, rv$swap_suggestions)
@@ -441,10 +457,22 @@ server <- function(input, output, session) {
                            
                            "friends" = div(class = "ct-content-with-nav",
                                            friends_screen_ui(
-                                             profile          = rv$profile,
-                                             group_members    = rv$group_members,
-                                             leaderboard_data = rv$leaderboard,
-                                             invite_code      = rv$invite_code
+                                             profile             = rv$profile,
+                                             group_members       = rv$group_members,
+                                             leaderboard_data    = rv$leaderboard,
+                                             invite_code         = rv$invite_code,
+                                             member_streaks      = rv$member_streaks,
+                                             member_1rm          = rv$member_1rm,
+                                             hidden_exercises    = rv$hidden_exercises,
+                                             user_exercise_names = tryCatch(
+                                               sort(unique(na.omit(sapply(
+                                                 seq_len(nrow(rv$all_logs %||% data.frame())),
+                                                 \(i) get_ex_name(rv$all_logs, i))))),
+                                               error = \(e) character(0)),
+                                             adjusted_my_volume  = if (length(rv$hidden_exercises) > 0)
+                                               compute_adjusted_volume(rv$all_logs, rv$hidden_exercises)
+                                             else NULL,
+                                             activity_feed       = rv$activity_feed
                                            )
                            ),
                            
@@ -504,15 +532,22 @@ server <- function(input, output, session) {
     rv$workouts     <- NULL
     rv$all_logs     <- NULL
     rv$prs          <- NULL
-    rv$leaderboard   <- NULL
-    rv$group_members <- NULL
-    rv$invite_code   <- NULL
-    rv$all_programs  <- NULL
-    rv$streak        <- NULL
-    rv$profile_edit  <- list()
+    rv$leaderboard      <- NULL
+    rv$group_members    <- NULL
+    rv$invite_code      <- NULL
+    rv$member_streaks   <- NULL
+    rv$member_1rm       <- NULL
+    rv$hidden_exercises <- character(0)
+    rv$activity_feed    <- NULL
+    rv$all_programs     <- NULL
+    rv$streak           <- NULL
+    rv$profile_edit   <- list()
     rv$recovery_token <- NULL
     rv$pw_reset_error <- NULL
-    rv$set_logs     <- list()
+    rv$set_logs       <- list()
+    rv$exercise_gifs    <- list()
+    rv$exercise_history <- list()
+    rv$activity_feed    <- NULL
     rv$auth_mode    <- "login"
     rv$auth_error   <- NULL
     rv$page         <- "login"
