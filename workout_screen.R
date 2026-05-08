@@ -22,6 +22,7 @@ function startRestTimer(seconds) {
       document.getElementById('rest-timer-bar').style.width = '0%';
       document.getElementById('rest-timer-display').innerText = 'Rest done!';
       document.getElementById('rest-timer-display').style.color = '#4ade80';
+      if (navigator.vibrate) { navigator.vibrate([300, 100, 300]); }
     }
   }, 1000);
 }
@@ -94,9 +95,86 @@ fetch_last_performance <- function(exercise_id, user_id, token) {
             token = token)
 }
 
+# ── EXERCISE HISTORY ─────────────────────────────────────────
+
+# Returns the last n_sessions best sets per session for an exercise.
+fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) {
+  we_ids <- tryCatch(
+    sb_select("workout_exercises",
+              sprintf("?exercise_id=eq.%s&select=id", exercise_id),
+              token = token),
+    error = \(e) NULL)
+  if (is.null(we_ids) || nrow(we_ids) == 0) return(NULL)
+
+  id_list <- paste0("(", paste(we_ids$id, collapse = ","), ")")
+  logs <- tryCatch(
+    sb_select("workout_set_logs",
+              sprintf(paste0("?user_id=eq.%s&is_warmup=eq.false",
+                             "&workout_exercise_id=in.%s",
+                             "&select=weight_lbs,reps_completed,rpe_actual,logged_at",
+                             "&order=logged_at.desc&limit=60"),
+                      user_id, id_list),
+              token = token),
+    error = \(e) NULL)
+  if (is.null(logs) || nrow(logs) == 0) return(NULL)
+
+  logs$date    <- as.Date(as.POSIXct(logs$logged_at, tz = "UTC"))
+  logs$wt      <- as.numeric(logs$weight_lbs)
+  logs$reps    <- as.integer(logs$reps_completed)
+  logs$rpe     <- as.numeric(logs$rpe_actual)
+
+  dates <- unique(logs$date[order(logs$date, decreasing = TRUE)])[seq_len(n_sessions)]
+  do.call(rbind, lapply(dates, function(d) {
+    day  <- logs[logs$date == d, ]
+    best <- day[which.max(replace(day$wt, is.na(day$wt), -Inf)), ]
+    data.frame(date     = d,
+               wt       = best$wt,
+               reps     = best$reps,
+               rpe      = best$rpe,
+               n_sets   = nrow(day),
+               stringsAsFactors = FALSE)
+  }))
+}
+
+# ── EXERCISEDB GIF HELPERS ───────────────────────────────────
+
+# Calls ExerciseDB API (RapidAPI) to find a GIF URL for the given exercise name.
+# Returns the gifUrl string or NULL on failure / no match.
+fetch_exercise_gif <- function(exercise_name, api_key) {
+  if (is.null(api_key) || nchar(api_key) == 0) return(NULL)
+  encoded <- utils::URLencode(tolower(trimws(exercise_name)), reserved = TRUE)
+  resp <- tryCatch(
+    request(paste0("https://exercisedb.p.rapidapi.com/exercises/name/", encoded)) |>
+      req_headers(
+        "X-RapidAPI-Key"  = api_key,
+        "X-RapidAPI-Host" = "exercisedb.p.rapidapi.com"
+      ) |>
+      req_error(is_error = \(r) FALSE) |>
+      req_perform(),
+    error = \(e) NULL)
+  if (is.null(resp) || resp$status_code != 200) return(NULL)
+  data <- tryCatch(fromJSON(resp_body_string(resp), simplifyDataFrame = TRUE),
+                   error = \(e) NULL)
+  if (is.null(data) || !is.data.frame(data) || nrow(data) == 0) return(NULL)
+  gif <- tryCatch(data$gifUrl[1], error = \(e) NULL)
+  if (is.null(gif) || is.na(gif) || nchar(gif) == 0) return(NULL)
+  gif
+}
+
+# Persists the fetched URL into the exercises table so future loads skip the API.
+cache_exercise_gif <- function(exercise_id, gif_url, svc_token) {
+  tryCatch(
+    sb_update("exercises",
+              sprintf("?id=eq.%s", exercise_id),
+              list(gif_url = gif_url),
+              token = svc_token),
+    error = \(e) NULL)
+}
+
 # ── WORKOUT SCREEN UI ────────────────────────────────────────
 workout_screen_ui <- function(workout, exercises, last_perf_map,
-                              set_logs_rv, timer_active) {
+                              set_logs_rv, timer_active,
+                              gif_map = list(), history_map = list()) {
   if (is.null(workout) || is.null(exercises)) {
     return(div(style = "padding:40px; text-align:center; color:#555;",
                "Loading session..."))
@@ -189,6 +267,10 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                       !is.na(ex_info$youtube_url)) ex_info$youtube_url else NULL
       note_tip <- if (!is.null(ex_info) && !is.null(ex_info$coaching_note) &&
                       !is.na(ex_info$coaching_note)) ex_info$coaching_note else NULL
+      # GIF: session cache takes priority over DB-cached value
+      gif_url  <- gif_map[[we$exercise_id]] %||%
+                  tryCatch({g <- ex_info$gif_url; if(!is.na(g)&&nchar(g)>0) g else NULL},
+                           error=\(e) NULL)
       
       # Last performance for pre-filling
       last <- last_perf_map[[we$exercise_id]]
@@ -261,7 +343,80 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                        font-size:11px; color:#5DCAA5; margin-bottom:10px;
                        line-height:1.4;",
                 note_tip),
-          
+
+          # GIF demo — collapsible if cached, load button if not yet fetched
+          if (!is.null(gif_url)) {
+            tags$details(
+              style = "margin-bottom:10px;",
+              tags$summary(
+                style = "font-size:11px; color:#555; cursor:pointer; padding:3px 0;
+                         list-style:none; display:flex; align-items:center; gap:5px;
+                         -webkit-user-select:none; user-select:none;",
+                HTML("&#x1F3AC;"), " Form demo"
+              ),
+              tags$img(
+                src     = gif_url,
+                alt     = paste(ex_name, "demonstration"),
+                loading = "lazy",
+                style   = paste0("width:100%; border-radius:8px; margin-top:8px;",
+                                 "max-height:240px; object-fit:contain; background:#111;")
+              )
+            )
+          } else if (nchar(EXERCISEDB_API_KEY) > 0) {
+            div(style = "margin-bottom:10px;",
+                tags$button(
+                  HTML("&#x1F3AC; Load form demo"),
+                  style = paste0("background:none; border:1px solid #2a2a2a; border-radius:6px;",
+                                 "padding:5px 10px; font-size:11px; color:#555; cursor:pointer;"),
+                  onclick = sprintf(
+                    "Shiny.setInputValue('load_exercise_gif','%s',{priority:'event'})",
+                    paste0(we$exercise_id, "|", gsub("'", "", ex_name, fixed=TRUE)))
+                )
+            )
+          },
+
+          # Exercise history — collapsible, lazy-loaded
+          {
+            hist <- history_map[[we$exercise_id]]
+            if (!is.null(hist) && nrow(hist) > 0) {
+              tags$details(
+                style = "margin-bottom:10px;",
+                tags$summary(
+                  style = "font-size:11px; color:#555; cursor:pointer; padding:3px 0;
+                           list-style:none; display:flex; align-items:center; gap:5px;
+                           -webkit-user-select:none; user-select:none;",
+                  HTML("&#x1F4CA;"), " History"
+                ),
+                div(style = "margin-top:8px; display:flex; flex-direction:column; gap:4px;",
+                    lapply(seq_len(nrow(hist)), function(h) {
+                      r <- hist[h, ]
+                      div(style = "display:flex; justify-content:space-between;
+                                   padding:5px 8px; background:#111; border-radius:6px;
+                                   font-size:11px;",
+                          span(style="color:#555;", format(r$date, "%b %d")),
+                          span(style="color:#aaa;",
+                               paste0(if (!is.na(r$wt)) paste0(r$wt, " lbs") else "BW",
+                                      " × ", r$reps, " reps",
+                                      if (!is.na(r$rpe)) paste0("  RPE ", r$rpe) else "",
+                                      if (r$n_sets > 1) paste0("  (", r$n_sets, " sets)") else ""))
+                      )
+                    })
+                )
+              )
+            } else {
+              div(style = "margin-bottom:10px;",
+                  tags$button(
+                    HTML("&#x1F4CA; History"),
+                    style = paste0("background:none; border:1px solid #2a2a2a; border-radius:6px;",
+                                   "padding:5px 10px; font-size:11px; color:#555; cursor:pointer;"),
+                    onclick = sprintf(
+                      "Shiny.setInputValue('load_exercise_history','%s',{priority:'event'})",
+                      we$exercise_id)
+                  )
+              )
+            }
+          },
+
           # Last session reference
           if (!is.null(last))
             div(style = "font-size:11px; color:#555; margin-bottom:8px;",
@@ -771,10 +926,45 @@ setup_workout_server <- function(input, output, session, rv) {
     rv$swap_we_id       <- NULL
     rv$swap_ex_id       <- NULL
     rv$swap_suggestions <- NULL
-    
+
     showNotification(
       paste0("Swapped! ", if (scope=="block") "Updated for rest of block." else "This session only."),
       type = "message", duration = 3)
+  })
+
+  # ── Load exercise history ──────────────────────────────────
+  observeEvent(input$load_exercise_history, {
+    req(rv$token, rv$user_id)
+    ex_id <- trimws(input$load_exercise_history %||% "")
+    if (nchar(ex_id) == 0 || !is.null(rv$exercise_history[[ex_id]])) return()
+    hist <- fetch_exercise_history(ex_id, rv$user_id, rv$token)
+    rv$exercise_history[[ex_id]] <- if (!is.null(hist)) hist else data.frame()
+  })
+
+  # ── Load & cache exercise GIF ──────────────────────────────
+  observeEvent(input$load_exercise_gif, {
+    req(rv$token)
+    raw    <- input$load_exercise_gif %||% ""
+    parts  <- strsplit(raw, "\\|")[[1]]
+    if (length(parts) < 2) return()
+    ex_id   <- parts[1]
+    ex_name <- paste(parts[-1], collapse = "|")
+
+    # Already fetched this session
+    if (!is.null(rv$exercise_gifs[[ex_id]])) return()
+
+    gif_url <- fetch_exercise_gif(ex_name, EXERCISEDB_API_KEY)
+    if (is.null(gif_url)) {
+      showNotification("No demo GIF found for this exercise.", type = "warning", duration = 3)
+      return()
+    }
+
+    # Session cache — triggers UI re-render immediately
+    rv$exercise_gifs[[ex_id]] <- gif_url
+
+    # Persist to DB so next session skips the API call
+    svc <- if (nchar(SUPABASE_SERVICE_KEY) > 0) SUPABASE_SERVICE_KEY else rv$token
+    cache_exercise_gif(ex_id, gif_url, svc)
   })
 }
 

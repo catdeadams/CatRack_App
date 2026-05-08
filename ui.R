@@ -138,7 +138,27 @@ ct_css <- "
 # ── UI object — MUST be the last expression in this file ─────
 ui <- page_fluid(
   theme = catrack_theme,
-  tags$head(tags$style(HTML(ct_css))),
+  tags$head(
+    tags$style(HTML(ct_css)),
+
+    # ── PWA ─────────────────────────────────────────────────
+    tags$link(rel = "manifest", href = "manifest.json"),
+    tags$meta(name = "theme-color",                          content = "#1D9E75"),
+    tags$meta(name = "mobile-web-app-capable",               content = "yes"),
+    tags$meta(name = "apple-mobile-web-app-capable",         content = "yes"),
+    tags$meta(name = "apple-mobile-web-app-status-bar-style",content = "black-translucent"),
+    tags$meta(name = "apple-mobile-web-app-title",           content = "CatRack"),
+    tags$link(rel = "apple-touch-icon",        href = "icons/icon-192.png"),
+    tags$link(rel = "icon", type = "image/svg+xml", href = "icons/icon.svg"),
+
+    tags$script(HTML("
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('sw.js').catch(function() {});
+        });
+      }
+    "))
+  ),
   div(class = "ct-app",
       uiOutput("main_ui")
   )
