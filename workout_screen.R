@@ -156,40 +156,58 @@ fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) 
 # Calls ExerciseDB API (RapidAPI) to find a GIF URL for the given exercise name.
 # Tries progressively shorter queries so "Barbell Back Squat" → "back squat" → "squat".
 fetch_exercise_gif <- function(exercise_name, api_key) {
-  if (is.null(api_key) || nchar(api_key) == 0) return(NULL)
+  if (is.null(api_key) || nchar(api_key) == 0)
+    return(list(url = NULL, error = "no_key"))
 
   try_query <- function(q) {
     encoded <- utils::URLencode(tolower(trimws(q)), reserved = TRUE)
+    url <- paste0("https://exercisedb.p.rapidapi.com/exercises/name/", encoded,
+                  "?limit=10&offset=0")
     resp <- tryCatch(
-      request(paste0("https://exercisedb.p.rapidapi.com/exercises/name/", encoded)) |>
+      request(url) |>
         req_headers("X-RapidAPI-Key"  = api_key,
                     "X-RapidAPI-Host" = "exercisedb.p.rapidapi.com") |>
         req_error(is_error = \(r) FALSE) |>
         req_perform(),
       error = \(e) NULL)
-    if (is.null(resp) || resp$status_code != 200) return(NULL)
-    data <- tryCatch(fromJSON(resp_body_string(resp), simplifyDataFrame = TRUE),
-                     error = \(e) NULL)
-    if (is.null(data) || !is.data.frame(data) || nrow(data) == 0) return(NULL)
-    gif <- tryCatch(data$gifUrl[1], error = \(e) NULL)
-    if (is.null(gif) || is.na(gif) || nchar(gif) == 0) return(NULL)
-    gif
+    if (is.null(resp))
+      return(list(url = NULL, error = "request_failed"))
+    if (resp$status_code != 200) {
+      body <- tryCatch(substr(resp_body_string(resp), 1, 200), error = \(e) "")
+      return(list(url = NULL, error = paste0("http_", resp$status_code, ": ", body)))
+    }
+    body_str <- tryCatch(resp_body_string(resp), error = \(e) "")
+    data <- tryCatch(fromJSON(body_str, simplifyDataFrame = TRUE), error = \(e) NULL)
+    # API may return plain array or wrapped object {exercises: [...]}
+    if (is.data.frame(data) && nrow(data) > 0) {
+      gif <- tryCatch(data$gifUrl[1], error = \(e) NULL)
+      if (!is.null(gif) && !is.na(gif) && nchar(gif) > 0)
+        return(list(url = gif, error = NULL))
+    }
+    if (is.list(data) && !is.null(data$exercises) && is.data.frame(data$exercises) && nrow(data$exercises) > 0) {
+      gif <- tryCatch(data$exercises$gifUrl[1], error = \(e) NULL)
+      if (!is.null(gif) && !is.na(gif) && nchar(gif) > 0)
+        return(list(url = gif, error = NULL))
+    }
+    list(url = NULL, error = paste0("no_match(", substr(body_str, 1, 80), ")"))
   }
 
-  # Build a cascade: full name → drop first word → drop first two words → last word only
-  words    <- strsplit(trimws(exercise_name), "\\s+")[[1]]
-  queries  <- unique(c(
+  words   <- strsplit(trimws(exercise_name), "\\s+")[[1]]
+  queries <- unique(c(
     exercise_name,
     if (length(words) > 2) paste(words[-1], collapse = " "),
     if (length(words) > 1) paste(tail(words, 2), collapse = " "),
     tail(words, 1)
   ))
 
+  last_err <- "no_match"
   for (q in queries) {
-    result <- try_query(q)
-    if (!is.null(result)) return(result)
+    res <- try_query(q)
+    message(sprintf("[GIF] query='%s' -> %s", q, if (!is.null(res$url)) "FOUND" else res$error))
+    if (!is.null(res$url)) return(list(url = res$url, error = NULL))
+    last_err <- res$error %||% last_err
   }
-  NULL
+  list(url = NULL, error = last_err)
 }
 
 # Persists the fetched URL into the exercises table so future loads skip the API.
@@ -984,9 +1002,13 @@ setup_workout_server <- function(input, output, session, rv) {
     # Already fetched this session
     if (!is.null(rv$exercise_gifs[[ex_id]])) return()
 
-    gif_url <- fetch_exercise_gif(ex_name, EXERCISEDB_API_KEY)
+    result  <- fetch_exercise_gif(ex_name, EXERCISEDB_API_KEY)
+    gif_url <- result$url
     if (is.null(gif_url)) {
-      showNotification("No demo GIF found for this exercise.", type = "warning", duration = 3)
+      err <- result$error %||% "unknown"
+      showNotification(paste0("GIF not found [", err, "]"), type = "warning", duration = 6)
+      # Mark as attempted so button doesn't spin forever
+      rv$exercise_gifs[[ex_id]] <- ""
       return()
     }
 
