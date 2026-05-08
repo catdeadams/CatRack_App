@@ -192,13 +192,10 @@ fetch_exercise_gif <- function(exercise_name, api_key) {
     list(url = NULL, error = paste0("no_match(", substr(body_str, 1, 80), ")"))
   }
 
+  # Only 2 attempts max to conserve the free-tier daily quota (50 req/day):
+  # full name first, then fall back to last word only.
   words   <- strsplit(trimws(exercise_name), "\\s+")[[1]]
-  queries <- unique(c(
-    exercise_name,
-    if (length(words) > 2) paste(words[-1], collapse = " "),
-    if (length(words) > 1) paste(tail(words, 2), collapse = " "),
-    tail(words, 1)
-  ))
+  queries <- unique(c(exercise_name, tail(words, 1)))
 
   last_err <- "no_match"
   for (q in queries) {
@@ -1006,9 +1003,12 @@ setup_workout_server <- function(input, output, session, rv) {
     gif_url <- result$url
     if (is.null(gif_url)) {
       err <- result$error %||% "unknown"
-      showNotification(paste0("GIF not found [", err, "]"), type = "warning", duration = 6)
-      # Mark as attempted so button doesn't spin forever
-      rv$exercise_gifs[[ex_id]] <- ""
+      if (grepl("429", err)) {
+        showNotification("ExerciseDB daily limit reached (50 req/day). Try again tomorrow.", type = "warning", duration = 6)
+      } else {
+        showNotification(paste0("GIF not found [", err, "]"), type = "warning", duration = 6)
+      }
+      rv$exercise_gifs[[ex_id]] <- ""   # sentinel: don't retry this session
       return()
     }
 
