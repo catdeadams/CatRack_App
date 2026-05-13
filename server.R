@@ -522,6 +522,9 @@ server <- function(input, output, session) {
     tags$script(HTML(
       "Shiny.addCustomMessageHandler('start_rest_timer', function(msg) {
          startRestTimer(msg.seconds);
+       });
+       Shiny.addCustomMessageHandler('reset_session_timer', function(msg) {
+         window.catrackWsStart = Date.now();
        });"
     ))
   })
