@@ -649,39 +649,54 @@ swap_modal_ui <- function(we_id, exercise_id, suggestions) {
                display:flex; align-items:flex-end; justify-content:center;",
       div(style = "background:#1a1a1a; border-radius:16px 16px 0 0;
                  width:100%; max-width:480px; padding:24px;",
-          
-          div(style="font-size:16px; font-weight:700; margin-bottom:6px;", "Swap Exercise"),
-          div(style="font-size:13px; color:#666; margin-bottom:16px;",
-              "Replace for this session only, or for the rest of the block."),
-          
+
+          div(style="font-size:16px; font-weight:700; margin-bottom:4px; color:#f0f0f0;",
+              "Swap Exercise"),
+          div(style="font-size:12px; color:#555; margin-bottom:16px;",
+              "Same muscles, same movement — tap to pick"),
+
           if (is.null(suggestions)) {
-            div(style="color:#555; text-align:center; padding:20px;", "Loading suggestions...")
+            div(style="color:#555; text-align:center; padding:20px;", "Finding substitutes...")
+          } else if (length(suggestions) == 0) {
+            div(style="color:#555; text-align:center; padding:20px;",
+                "No substitutes found with your equipment.")
           } else {
             tagList(
               lapply(seq_along(suggestions), function(i) {
                 s <- suggestions[[i]]
-                div(style="background:#2a2a2a; border-radius:10px; padding:12px;
-                       margin-bottom:8px; cursor:pointer;",
+                muscles_str <- tryCatch(
+                  paste(unlist(s$primary_muscles), collapse = ", "),
+                  error = \(e) "")
+                label <- if (i == 1) "Best match" else if (i == 2) "Alternative" else "Option"
+                div(style = "background:#222; border:1px solid #2a2a2a; border-radius:10px;
+                             padding:12px 14px; margin-bottom:8px; cursor:pointer;
+                             transition:border-color 0.15s;",
                     onclick = sprintf(
                       "Shiny.setInputValue('confirm_swap', '%s|%s|session', {priority:'event'})",
                       we_id, s$id),
-                    div(style="font-size:14px; font-weight:600; color:#f0f0f0;", s$name),
-                    div(style="font-size:11px; color:#666; margin-top:3px;",
-                        paste0(s$default_rep_range_low, "–", s$default_rep_range_high,
-                               " reps · ", paste(s$primary_muscles, collapse=", ")))
+                    div(style = "display:flex; justify-content:space-between; align-items:flex-start;",
+                      div(style = "font-size:14px; font-weight:600; color:#f0f0f0;", s$name),
+                      div(style = "font-size:10px; color:#1D9E75; font-weight:600;
+                                   text-transform:uppercase; letter-spacing:0.06em; margin-left:8px;",
+                          label)
+                    ),
+                    div(style = "font-size:11px; color:#555; margin-top:4px;",
+                        paste0("🎯 ", tools::toTitleCase(gsub("_", " ", muscles_str)),
+                               " · ", s$default_rep_range_low %||% 8, "–",
+                               s$default_rep_range_high %||% 12, " reps"))
                 )
               }),
-              div(style="display:flex; gap:8px; margin-top:4px;",
-                  tags$button("Cancel", class="ct-btn-secondary ct-btn-sm",
-                              onclick="Shiny.setInputValue('cancel_swap', 1, {priority:'event'})"),
-                  if (!is.null(suggestions) && length(suggestions) > 0)
-                    tags$button("Swap rest of block",
-                                style="flex:1; background:#333; color:#ddd; border:none;
-                       border-radius:8px; padding:10px; cursor:pointer; font-size:13px;",
-                                onclick = sprintf(
-                                  "Shiny.setInputValue('confirm_swap', '%s|%s|block', {priority:'event'})",
-                                  we_id, suggestions[[1]]$id))
-                  else NULL
+              div(style = "display:flex; gap:8px; margin-top:8px;",
+                  tags$button("Cancel", class = "ct-btn-secondary ct-btn-sm",
+                              onclick = "Shiny.setInputValue('cancel_swap', 1, {priority:'event'})"),
+                  tags$button("Swap rest of block →",
+                              style = "flex:1; background:#1a2a1f; color:#1D9E75;
+                                       border:1px solid #1D9E75; border-radius:8px;
+                                       padding:10px; cursor:pointer; font-size:13px;
+                                       font-weight:600;",
+                              onclick = sprintf(
+                                "Shiny.setInputValue('confirm_swap', '%s|%s|block', {priority:'event'})",
+                                we_id, suggestions[[1]]$id))
               )
             )
           }
@@ -1021,86 +1036,95 @@ setup_workout_server <- function(input, output, session, rv) {
   })
 }
 
-# ── CLAUDE SWAP SUGGESTIONS ──────────────────────────────────
+# ── SWAP SUGGESTIONS ─────────────────────────────────────────
+# Returns up to 3 exercise substitutes that target the same muscles
+# as the exercise being swapped, filtered by the user's equipment.
+#
+# Strategy (in priority order):
+#  1. Use the curated substitution_1 / substitution_2 fields on the exercise
+#     record — these are hand-picked same-muscle-group alternatives
+#  2. Fall back to scoring all equipment-eligible exercises by primary_muscles
+#     overlap with the original exercise
 get_swap_suggestions <- function(exercise_name, primary_muscles,
                                  user_equipment, user_token, exclude_ex_id) {
-  
-  # First try: find substitutions in our own DB
-  # Fetch all exercises with equipment info, filter in R
-  db_subs <- sb_select("exercises",
-                       sprintf("?id=neq.%s&select=id,name,category,primary_muscles,equipment_required,default_rep_range_low,default_rep_range_high",
-                               exclude_ex_id),
-                       token = user_token)
-  
-  if (!is.null(db_subs) && nrow(db_subs) > 0) {
-    # Filter by: user has required equipment
-    db_subs_filtered <- db_subs[sapply(seq_len(nrow(db_subs)), function(i) {
-      req <- tryCatch(
-        if (is.list(db_subs$equipment_required)) db_subs$equipment_required[[i]]
-        else strsplit(gsub("[{}]","",db_subs$equipment_required[i]),",")[[1]],
-        error = \(e) character(0))
-      req <- trimws(req)
-      if (length(req) == 0 || all(req == "")) return(TRUE)
-      all(req %in% c(user_equipment, "bodyweight"))
-    }), ]
-    
-    if (!is.null(db_subs_filtered) && nrow(db_subs_filtered) >= 2) {
-      return(lapply(seq_len(min(3, nrow(db_subs_filtered))), function(i)
-        as.list(db_subs_filtered[i, ])))
-    }
+
+  # Helper: parse an array field from DB (handles R list or raw string)
+  parse_arr <- function(val) {
+    if (is.list(val))       return(tolower(trimws(unlist(val))))
+    if (is.character(val))  return(tolower(trimws(strsplit(gsub('[{}\\[\\]"]', '', val[1]), ",")[[1]])))
+    character(0)
   }
-  
-  # Fallback: use Claude API for suggestions
-  if (nchar(ANTHROPIC_API_KEY) == 0) return(list())
-  
-  prompt <- sprintf(
-    paste0("You are a strength training coach. Suggest 3 exercise substitutions for '%s'",
-           " that target %s. The user has this equipment: %s.",
-           " Return ONLY a JSON array like:",
-           " [{\"name\":\"Exercise Name\",\"reason\":\"brief reason\"}].",
-           " No other text."),
-    exercise_name, primary_muscles, paste(user_equipment, collapse=", "))
-  
-  resp <- tryCatch(
-    request("https://api.anthropic.com/v1/messages") |>
-      req_headers(
-        "x-api-key"         = ANTHROPIC_API_KEY,
-        "anthropic-version" = "2023-06-01",
-        "content-type"      = "application/json"
-      ) |>
-      req_body_raw(toJSON(list(
-        model      = "claude-sonnet-4-20250514",
-        max_tokens = 300L,
-        messages   = list(list(role="user", content=prompt))
-      ), auto_unbox=TRUE)) |>
-      req_error(is_error = \(r) FALSE) |>
-      req_perform(),
-    error = \(e) NULL)
-  
-  if (is.null(resp) || resp$status_code != 200) return(list())
-  
-  body    <- fromJSON(resp_body_string(resp))
-  raw_txt <- tryCatch(body$content[[1]]$text, error=\(e) "")
-  clean   <- gsub("```json|```", "", raw_txt)
-  
-  suggestions <- tryCatch(fromJSON(clean, simplifyDataFrame=FALSE), error=\(e) list())
-  
-  # Look up each suggested name in our DB
-  results <- list()
-  for (s in suggestions) {
+
+  # Helper: check if user has all required equipment
+  has_equipment <- function(req_val) {
+    req <- parse_arr(req_val)
+    req <- req[nchar(req) > 0]
+    if (length(req) == 0) return(TRUE)
+    all(req %in% c(tolower(user_equipment), "bodyweight"))
+  }
+
+  results      <- list()
+  found_ids    <- character(0)
+
+  # ── Step 1: curated substitutions on the exercise record ──────────────
+  cur <- sb_select("exercises",
+    sprintf("?id=eq.%s&select=substitution_1,substitution_2", exclude_ex_id),
+    token = user_token)
+
+  sub_names <- character(0)
+  if (!is.null(cur) && nrow(cur) > 0) {
+    s1 <- tryCatch(as.character(cur$substitution_1[1]), error = \(e) NA_character_)
+    s2 <- tryCatch(as.character(cur$substitution_2[1]), error = \(e) NA_character_)
+    sub_names <- na.omit(c(s1, s2))
+    sub_names <- sub_names[nchar(trimws(sub_names)) > 0]
+  }
+
+  for (nm in sub_names) {
     match <- sb_select("exercises",
-                       sprintf("?name=ilike.*%s*&select=id,name,primary_muscles,default_rep_range_low,default_rep_range_high&limit=1",
-                               URLencode(s$name, reserved=TRUE)),
-                       token = user_token)
-    if (!is.null(match)) {
-      results <- c(results, list(as.list(match[1, ])))
-    } else {
-      results <- c(results, list(list(
-        id   = NA, name = s$name,
-        primary_muscles = list(primary_muscles),
-        default_rep_range_low = 8L, default_rep_range_high = 12L
-      )))
-    }
+      sprintf("?name=ilike.%s&select=id,name,category,primary_muscles,equipment_required,default_rep_range_low,default_rep_range_high&limit=1",
+              URLencode(nm, reserved = TRUE)),
+      token = user_token)
+    if (is.null(match) || nrow(match) == 0) next
+    if (!has_equipment(match$equipment_required[[1]])) next
+    results   <- c(results, list(as.list(match[1, ])))
+    found_ids <- c(found_ids, match$id[1])
+    if (length(results) >= 3) return(results)
   }
+
+  # ── Step 2: muscle-overlap scoring from full exercise pool ────────────
+  target_muscles <- tolower(trimws(strsplit(primary_muscles, ",\\s*")[[1]]))
+  target_muscles <- target_muscles[nchar(target_muscles) > 0]
+
+  pool <- sb_select("exercises",
+    sprintf("?id=neq.%s&select=id,name,category,primary_muscles,equipment_required,default_rep_range_low,default_rep_range_high",
+            exclude_ex_id),
+    token = user_token)
+
+  if (is.null(pool) || nrow(pool) == 0) return(results)
+
+  # Exclude already-added + filter by equipment
+  pool <- pool[!pool$id %in% found_ids, ]
+  ok   <- vapply(seq_len(nrow(pool)), function(i)
+    has_equipment(pool$equipment_required[[i]]), logical(1))
+  pool <- pool[ok, , drop = FALSE]
+  if (nrow(pool) == 0) return(results)
+
+  # Score by primary_muscles overlap count
+  scores <- vapply(seq_len(nrow(pool)), function(i) {
+    m <- parse_arr(pool$primary_muscles[[i]])
+    m <- m[nchar(m) > 0]
+    length(intersect(m, target_muscles))
+  }, integer(1))
+
+  # Keep only exercises that share ≥1 primary muscle
+  matched  <- pool[scores > 0, , drop = FALSE]
+  mscores  <- scores[scores > 0]
+  if (nrow(matched) > 0) {
+    matched <- matched[order(-mscores), , drop = FALSE]
+    need    <- max(0L, 3L - length(results))
+    results <- c(results,
+      lapply(seq_len(min(need, nrow(matched))), function(i) as.list(matched[i, ])))
+  }
+
   results
 }

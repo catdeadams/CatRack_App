@@ -224,40 +224,68 @@ get_eligible_exercises <- function(user_equipment) {
   eligible
 }
 
-# Pick best exercise for a slot, excluding already-used ones
+# Pick best exercise for a slot, excluding already-used ones.
+#
+# Block-variant rotation strategy (mirrors Nippard's approach):
+#   Block A → prefer barbell / free-weight compounds (heaviest progressive overload)
+#   Block B → prefer machine / cable (constant tension, safer fatigue accumulation)
+#   Block C → prefer dumbbell / unilateral / bodyweight (ROM, balance, novelty)
+#
+# This ensures each 4-week block uses meaningfully different exercises rather
+# than the same exercise repeated or a random alphabetical pick.
 pick_exercise <- function(exercises, movement_patterns = NULL, categories = NULL,
                           exclude_ids = character(0), prefer_compound = TRUE,
                           goal = "hypertrophy", block_variant = "A") {
   candidates <- exercises
-  
+
   # Filter by movement pattern or category
   if (!is.null(movement_patterns))
     candidates <- candidates[candidates$movement_pattern %in% movement_patterns, ]
   if (!is.null(categories))
     candidates <- candidates[candidates$category %in% categories, ]
-  
+
   # Exclude already-assigned exercises this session
   candidates <- candidates[!candidates$id %in% exclude_ids, ]
-  
+
   if (nrow(candidates) == 0) return(NULL)
-  
+
   # Prefer compound vs isolation based on flag
   if (prefer_compound && any(candidates$is_compound))
     candidates <- candidates[candidates$is_compound, ]
-  
-  # For block novelty: pick different exercises in B and C variants
-  # Simple rotation: sort by name and pick different offsets
-  candidates <- candidates[order(candidates$name), ]
-  n <- nrow(candidates)
-  
-  idx <- switch(block_variant,
-                "A" = 1L,
-                "B" = if (n >= 2) 2L else 1L,
-                "C" = if (n >= 3) 3L else if (n >= 2) 2L else 1L,
-                1L
+
+  if (nrow(candidates) == 0) return(NULL)
+
+  # ── Block-variant equipment preference ────────────────────────────────
+  # Defines which equipment signals to prefer for each training block
+  block_equip_pref <- list(
+    "A" = c("barbell", "squat_rack", "ez_bar", "trap_bar"),          # free weight
+    "B" = c("cable_machine", "lat_pulldown_machine", "hack_squat_machine",
+            "leg_press_machine", "leg_extension_machine",
+            "lying_leg_curl_machine", "seated_leg_curl_machine",
+            "chest_press_machine", "pec_dec_machine",
+            "hip_thrust_machine", "hip_abduction_machine",
+            "calf_raise_machine", "ab_machine"),                      # machines
+    "C" = c("dumbbells", "bodyweight", "resistance_bands",
+            "pullup_bar", "dip_bars", "bench")                        # dumbbells / BW
   )
-  
-  candidates[idx, ]
+  pref <- block_equip_pref[[block_variant]] %||% character(0)
+
+  # Try to find a candidate that uses preferred equipment
+  if (length(pref) > 0) {
+    preferred <- candidates[vapply(seq_len(nrow(candidates)), function(i) {
+      eq <- tryCatch(
+        if (is.list(candidates$equipment_required)) candidates$equipment_required[[i]]
+        else strsplit(gsub('[{}"]', '', candidates$equipment_required[i]), ",")[[1]],
+        error = \(e) character(0))
+      any(trimws(eq) %in% pref)
+    }, logical(1)), , drop = FALSE]
+
+    if (nrow(preferred) > 0) candidates <- preferred
+  }
+
+  # Within the filtered pool, sort by name for determinism then pick first
+  candidates <- candidates[order(candidates$name), , drop = FALSE]
+  candidates[1L, ]
 }
 
 # ============================================================
