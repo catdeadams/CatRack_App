@@ -362,7 +362,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                         onclick = "restartTimer()"),
             tags$button("Skip",
                         style = paste0("background:#1e1e1e; border:none; border-radius:8px;",
-                                       "padding:6px 10px; font-size:11px; color:#555;",
+                                       "padding:6px 10px; font-size:11px; color:#888;",
                                        "cursor:pointer; white-space:nowrap;"),
                         onclick = "stopTimer()")
         )
@@ -413,7 +413,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                         "text-transform:uppercase; letter-spacing:0.05em;"),
                       if (is_ss) "Superset" else paste0("Block ", g_idx)
                   ),
-                  div(style = "font-size:11px; color:#444;",
+                  div(style = "font-size:11px; color:#888;",
                       paste0(n_sets, " sets · ", rest_label))
               ),
               # Right badge: done check OR "×N" sets badge
@@ -483,7 +483,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                     "display:flex; align-items:center; gap:8px;",
                     "padding:0 14px; margin:0;"),
                   div(style = "flex:1; height:1px; background:#1e1e1e;"),
-                  div(style = "font-size:10px; color:#333; font-weight:600;",
+                  div(style = "font-size:10px; color:#666; font-weight:600;",
                       "SUPERSET"),
                   div(style = "flex:1; height:1px; background:#1e1e1e;")
               )
@@ -496,7 +496,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                   # ── Exercise header: thumbnail + info + action btns ──
                   div(style = "display:flex; align-items:flex-start; gap:10px; margin-bottom:10px;",
 
-                      # GIF thumbnail or placeholder
+                      # GIF thumbnail (only shown when loaded — no placeholder)
                       if (!is.null(gif_url) && nchar(gif_url) > 0) {
                         tags$img(
                           src     = gif_url,
@@ -505,13 +505,6 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           style   = paste0(
                             "width:58px; height:58px; border-radius:10px;",
                             "object-fit:cover; background:#111; flex-shrink:0;"))
-                      } else {
-                        div(style = paste0(
-                              "width:58px; height:58px; border-radius:10px;",
-                              "background:#1e1e1e; flex-shrink:0;",
-                              "display:flex; align-items:center; justify-content:center;",
-                              "font-size:22px;"),
-                            "🏋️")
                       },
 
                       # Name + tags
@@ -526,16 +519,16 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           div(style = "display:flex; flex-wrap:wrap; gap:4px; align-items:center;",
                               if (nchar(muscles_display) > 0)
                                 span(style = paste0(
-                                       "font-size:10px; color:#555;",
+                                       "font-size:10px; color:#aaa;",
                                        "background:#1e1e1e; border-radius:4px; padding:2px 7px;"),
-                                     paste0("🎯 ", muscles_display)),
+                                     muscles_display),
                               if (nchar(ex_cat) > 0)
                                 span(style = paste0(
-                                       "font-size:10px; color:#333;",
+                                       "font-size:10px; color:#777;",
                                        "background:#1a1a1a; border-radius:4px; padding:2px 7px;"),
                                      tools::toTitleCase(gsub("_", " ", ex_cat)))
                           ),
-                          div(style = "font-size:11px; color:#333; margin-top:4px;",
+                          div(style = "font-size:11px; color:#888; margin-top:4px;",
                               paste0(we$rep_range_low, "–", we$rep_range_high, " reps · RPE ",
                                      we$rpe_target))
                       ),
@@ -562,12 +555,12 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                                         we$id, we$exercise_id)),
                           if (nchar(EXERCISEDB_API_KEY) > 0 &&
                               (is.null(gif_url) || nchar(gif_url %||% "") == 0))
-                            tags$button("🎬",
+                            tags$button("GIF",
                                         style = paste0(
                                           "background:#1e1e1e; border:none; border-radius:7px;",
-                                          "padding:6px 8px; font-size:12px; color:#555;",
-                                          "cursor:pointer;"),
-                                        title   = "Load form demo",
+                                          "padding:4px 7px; font-size:10px; color:#888;",
+                                          "cursor:pointer; letter-spacing:0.04em;"),
+                                        title   = "Load form demo GIF",
                                         onclick = sprintf(
                                           "Shiny.setInputValue('load_exercise_gif','%s',{priority:'event'})",
                                           paste0(we$exercise_id, "|",
@@ -585,7 +578,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
 
                   # Last performance reference
                   if (!is.null(last))
-                    div(style = "font-size:11px; color:#333; margin-bottom:8px;",
+                    div(style = "font-size:11px; color:#888; margin-bottom:8px;",
                         paste0("Last: ",
                                if (!is.na(last$weight_lbs))
                                  paste0(last$weight_lbs, " lbs × ")
@@ -596,8 +589,8 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
 
                   # Warmup sets note
                   if (!is.null(we$warmup_sets) && !is.na(we$warmup_sets) && we$warmup_sets > 0)
-                    div(style = "font-size:11px; color:#333; margin-bottom:8px;",
-                        paste0("⬆ ", we$warmup_sets, " warm-up set(s)")),
+                    div(style = "font-size:11px; color:#777; margin-bottom:8px;",
+                        paste0(we$warmup_sets, " warm-up set(s) before working sets")),
 
                   # ── Set logging grid ─────────────────────────────────
                   div(
@@ -605,12 +598,12 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                     div(style = paste0(
                           "display:grid;",
                           "grid-template-columns:24px 1fr 1fr 50px 34px;",
-                          "gap:4px; padding:0 2px 5px; border-bottom:1px solid #1a1a1a;",
+                          "gap:4px; padding:0 2px 5px; border-bottom:1px solid #222;",
                           "margin-bottom:5px;"),
-                        div(style = "font-size:9px; color:#2e2e2e; text-transform:uppercase; text-align:center;", "SET"),
-                        div(style = "font-size:9px; color:#2e2e2e; text-transform:uppercase;", "WEIGHT (lbs)"),
-                        div(style = "font-size:9px; color:#2e2e2e; text-transform:uppercase;", "REPS"),
-                        div(style = "font-size:9px; color:#2e2e2e; text-transform:uppercase;", "RPE"),
+                        div(style = "font-size:9px; color:#666; text-transform:uppercase; text-align:center;", "SET"),
+                        div(style = "font-size:9px; color:#666; text-transform:uppercase;", "WEIGHT (lbs)"),
+                        div(style = "font-size:9px; color:#666; text-transform:uppercase;", "REPS"),
+                        div(style = "font-size:9px; color:#666; text-transform:uppercase;", "RPE"),
                         div()
                     ),
 
@@ -646,7 +639,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           # Set number
                           div(style = paste0(
                                 "font-size:12px; font-weight:700; text-align:center; ",
-                                if (is_logged) "color:#1D9E75;" else "color:#2e2e2e;"),
+                                if (is_logged) "color:#1D9E75;" else "color:#777;"),
                               s),
 
                           # Weight input
@@ -744,9 +737,9 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           tags$details(
                             tags$summary(
                               style = paste0(
-                                "font-size:11px; color:#333; cursor:pointer; padding:3px 0;",
+                                "font-size:11px; color:#888; cursor:pointer; padding:3px 0;",
                                 "list-style:none; -webkit-user-select:none; user-select:none;"),
-                              "📊 History"),
+                              "History"),
                             div(style = "margin-top:6px; display:flex; flex-direction:column; gap:3px;",
                                 lapply(seq_len(nrow(hist)), function(h) {
                                   r <- hist[h, ]
@@ -754,8 +747,8 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                                         "display:flex; justify-content:space-between;",
                                         "padding:4px 7px; background:#0d0d0d; border-radius:5px;",
                                         "font-size:11px;"),
-                                      span(style = "color:#333;", format(r$date, "%b %d")),
-                                      span(style = "color:#888;",
+                                      span(style = "color:#777;", format(r$date, "%b %d")),
+                                      span(style = "color:#aaa;",
                                            paste0(if (!is.na(r$wt)) paste0(r$wt, " lbs") else "BW",
                                                   " × ", r$reps, " reps",
                                                   if (!is.na(r$rpe)) paste0("  RPE ", r$rpe) else "",
@@ -767,11 +760,11 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                     } else if (is.null(hist)) {
                       div(style = "margin-top:8px;",
                           tags$button(
-                            "📊 History",
+                            "History",
                             style = paste0(
-                              "background:none; border:1px solid #1e1e1e;",
+                              "background:none; border:1px solid #333;",
                               "border-radius:6px; padding:5px 10px;",
-                              "font-size:11px; color:#2e2e2e; cursor:pointer;"),
+                              "font-size:11px; color:#777; cursor:pointer;"),
                             onclick = sprintf(
                               "Shiny.setInputValue('load_exercise_history','%s',{priority:'event'})",
                               we$exercise_id))
