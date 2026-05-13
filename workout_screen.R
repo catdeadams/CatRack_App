@@ -219,8 +219,10 @@ build_exercise_groups <- function(exercises) {
   group_order <- character(0)
   group_map   <- list()
   for (i in seq_len(nrow(exercises))) {
-    sg <- tryCatch(trimws(as.character(exercises$superset_group[i])), error = \(e) "")
-    if (nchar(sg) == 0 || sg == "NA") {
+    sg_raw <- tryCatch(exercises$superset_group[i], error = \(e) NA)
+    sg <- if (!is.null(sg_raw) && length(sg_raw) == 1 && !is.na(sg_raw))
+      trimws(as.character(sg_raw)) else ""
+    if (nchar(sg) == 0) {
       key <- paste0("solo_", i)
     } else {
       key <- paste0("ss_", sg)
