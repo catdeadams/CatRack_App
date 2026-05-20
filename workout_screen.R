@@ -478,8 +478,9 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
 
             ex_last_note <- tryCatch({
               last_entry <- if (length(we_logs) > 0) we_logs[[length(we_logs)]] else NULL
-              if (!is.null(last_entry) && !is.null(last_entry$notes) &&
-                  !is.na(last_entry$notes)) last_entry$notes else ""
+              raw <- if (!is.null(last_entry)) last_entry$notes else NULL
+              s   <- tryCatch(as.character(raw %||% ""), error = \(e) "")
+              if (s %in% c("", "NA", "{}", "[]", "null")) "" else s
             }, error = \(e) "")
 
             # Separator between exercises in a superset
@@ -858,15 +859,60 @@ swap_modal_ui <- function(we_id, exercise_id, suggestions) {
         "display:flex; align-items:flex-end; justify-content:center;"),
       div(style = paste0(
             "background:#141414; border-radius:20px 20px 0 0;",
-            "width:100%; max-width:480px; padding:24px;",
+            "width:100%; max-width:480px; padding:24px 24px 32px;",
             "border-top:1px solid #222;"),
+
+          tags$script(HTML(sprintf("
+            window._swapWeId   = '%s';
+            window._swapExId   = null;
+            window._swapScope  = 'session';
+
+            function swapSelectEx(el, exId) {
+              document.querySelectorAll('.swap-card').forEach(function(c) {
+                c.style.border = '1px solid #242424';
+                c.style.background = '#1a1a1a';
+              });
+              el.style.border = '1px solid #1D9E75';
+              el.style.background = '#0a1f16';
+              window._swapExId = exId;
+              document.getElementById('do-swap-btn').style.opacity = '1';
+              document.getElementById('do-swap-btn').disabled = false;
+            }
+
+            function swapSelectScope(scope) {
+              window._swapScope = scope;
+              var btns = document.querySelectorAll('.swap-scope-btn');
+              btns.forEach(function(b) {
+                b.style.background   = '#1e1e1e';
+                b.style.color        = '#888';
+                b.style.border       = '1px solid #333';
+                b.style.fontWeight   = '400';
+              });
+              var active = document.getElementById('swap-scope-' + scope);
+              if (active) {
+                active.style.background  = '#0a1f16';
+                active.style.color       = '#1D9E75';
+                active.style.border      = '1px solid #1D9E75';
+                active.style.fontWeight  = '700';
+              }
+            }
+
+            function doSwap() {
+              if (!window._swapExId) return;
+              Shiny.setInputValue('confirm_swap',
+                window._swapWeId + '|' + window._swapExId + '|' + window._swapScope,
+                {priority:'event'});
+            }
+            // Init scope button state
+            setTimeout(function() { swapSelectScope('session'); }, 50);
+          ", we_id))),
 
           div(style = "width:40px; height:4px; background:#333; border-radius:2px; margin:0 auto 20px;"),
 
           div(style = "font-size:17px; font-weight:700; margin-bottom:4px; color:#f0f0f0;",
               "Swap Exercise"),
-          div(style = "font-size:12px; color:#444; margin-bottom:18px;",
-              "Same muscles, same movement — tap to pick"),
+          div(style = "font-size:12px; color:#555; margin-bottom:16px;",
+              "Pick a replacement, choose scope, then confirm."),
 
           if (is.null(suggestions)) {
             div(style = "color:#444; text-align:center; padding:24px;",
@@ -876,58 +922,78 @@ swap_modal_ui <- function(we_id, exercise_id, suggestions) {
                 "No substitutes found with your equipment.")
           } else {
             tagList(
-              # Each suggestion card has its own scope buttons
+              # Selectable exercise cards
               lapply(seq_along(suggestions), function(i) {
                 s           <- suggestions[[i]]
                 muscles_str <- tryCatch(
                   tools::toTitleCase(gsub("_", " ",
                     paste(unlist(s$primary_muscles), collapse = ", "))),
                   error = \(e) "")
-                match_label <- if (i == 1) "Best match" else if (i == 2) "Alternative" else "Option"
-                div(style = paste0(
-                      "background:#1a1a1a; border:1px solid #242424;",
-                      "border-radius:12px; padding:14px 16px; margin-bottom:10px;"),
-                    div(style = "display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;",
-                        div(style = "font-size:14px; font-weight:600; color:#f0f0f0;",
-                            s$name),
-                        div(style = paste0(
-                              "font-size:10px; color:#1D9E75; font-weight:700;",
-                              "text-transform:uppercase; letter-spacing:0.07em;",
-                              "margin-left:8px; flex-shrink:0;"),
-                            match_label)
-                    ),
-                    div(style = "font-size:11px; color:#555; margin-bottom:10px;",
-                        paste0(muscles_str,
-                               " · ", s$default_rep_range_low %||% 8,
-                               "–", s$default_rep_range_high %||% 12, " reps")),
-                    # Scope buttons under each option
-                    div(style = "display:flex; gap:6px;",
-                        tags$button(
-                          "This session",
-                          style = paste0(
-                            "flex:1; background:#1e1e1e; color:#aaa;",
-                            "border:1px solid #333; border-radius:8px;",
-                            "padding:8px; font-size:12px; cursor:pointer;"),
-                          onclick = sprintf(
-                            "Shiny.setInputValue('confirm_swap','%s|%s|session',{priority:'event'})",
-                            we_id, s$id)),
-                        tags$button(
-                          "Rest of block",
-                          style = paste0(
-                            "flex:1; background:#0a1f16; color:#1D9E75;",
-                            "border:1px solid #1D9E75; border-radius:8px;",
-                            "padding:8px; font-size:12px; font-weight:600; cursor:pointer;"),
-                          onclick = sprintf(
-                            "Shiny.setInputValue('confirm_swap','%s|%s|block',{priority:'event'})",
-                            we_id, s$id))
-                    )
+                match_label <- if (i == 1) "BEST MATCH" else if (i == 2) "ALTERNATIVE" else "OPTION"
+                label_color <- if (i == 1) "#1D9E75" else "#888"
+                div(
+                  class   = "swap-card",
+                  style   = paste0(
+                    "background:#1a1a1a; border:1px solid #242424;",
+                    "border-radius:12px; padding:14px 16px; margin-bottom:8px;",
+                    "cursor:pointer; transition:border 0.15s, background 0.15s;"),
+                  onclick = sprintf("swapSelectEx(this,'%s')", s$id),
+                  div(style = "display:flex; justify-content:space-between; align-items:center;",
+                      div(style = "font-size:14px; font-weight:600; color:#f0f0f0;", s$name),
+                      div(style = sprintf(
+                            "font-size:10px; color:%s; font-weight:700; letter-spacing:0.07em;",
+                            label_color),
+                          match_label)
+                  ),
+                  div(style = "font-size:11px; color:#555; margin-top:3px;",
+                      paste0(muscles_str,
+                             " · ", s$default_rep_range_low %||% 8,
+                             "–", s$default_rep_range_high %||% 12, " reps"))
                 )
               }),
+
+              # Scope toggle
+              div(style = "margin:16px 0 12px;",
+                  div(style = "font-size:11px; color:#555; text-transform:uppercase;
+                               letter-spacing:0.07em; margin-bottom:8px;",
+                      "Apply swap to"),
+                  div(style = "display:flex; gap:8px;",
+                      tags$button(
+                        "This session",
+                        id    = "swap-scope-session",
+                        class = "swap-scope-btn",
+                        style = paste0(
+                          "flex:1; border-radius:8px; padding:10px;",
+                          "font-size:13px; cursor:pointer;"),
+                        onclick = "swapSelectScope('session')"),
+                      tags$button(
+                        "Rest of block",
+                        id    = "swap-scope-block",
+                        class = "swap-scope-btn",
+                        style = paste0(
+                          "flex:1; border-radius:8px; padding:10px;",
+                          "font-size:13px; cursor:pointer;"),
+                        onclick = "swapSelectScope('block')")
+                  )
+              ),
+
+              # Confirm button
+              tags$button(
+                "Confirm Swap",
+                id    = "do-swap-btn",
+                style = paste0(
+                  "width:100%; background:#1D9E75; color:#fff; border:none;",
+                  "border-radius:12px; padding:14px; font-size:15px;",
+                  "font-weight:700; cursor:pointer; margin-bottom:10px;",
+                  "opacity:0.35;"),
+                disabled = NA,
+                onclick  = "doSwap()"),
+
               tags$button(
                 "Cancel",
                 style = paste0(
-                  "width:100%; background:#1e1e1e; color:#555; border:none;",
-                  "border-radius:10px; padding:12px; font-size:13px; cursor:pointer; margin-top:4px;"),
+                  "width:100%; background:none; color:#555; border:none;",
+                  "border-radius:10px; padding:10px; font-size:13px; cursor:pointer;"),
                 onclick = "Shiny.setInputValue('cancel_swap', 1, {priority:'event'})")
             )
           }
