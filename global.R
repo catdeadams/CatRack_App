@@ -10,7 +10,6 @@ library(jsonlite)
 library(dplyr)
 library(lubridate)
 library(plotly)
-library(openxlsx)
 
 # ── CREDENTIALS ─────────────────────────────────────────────
 # All secrets come exclusively from environment variables.

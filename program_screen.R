@@ -263,7 +263,7 @@ programs_page_ui <- function(active_program, all_programs,
       tagList(
         div(style = "display:flex; justify-content:space-between; align-items:center;",
             div(class = "ct-section-title", style = "margin-bottom:0;", "ACTIVE PROGRAM"),
-            downloadButton("download_program_excel", "Export .xlsx",
+            downloadButton("download_program_excel", "Export .csv",
               style = paste0(
                 "font-size:11px; color:#1D9E75; background:none; border:1px solid #1D9E75;",
                 "border-radius:8px; padding:4px 10px; cursor:pointer; height:auto;",
@@ -507,19 +507,18 @@ setup_program_server <- function(input, output, session, rv) {
     }
   })
 
-  # ── Excel export ──────────────────────────────────────────
+  # ── CSV export ────────────────────────────────────────────
   output$download_program_excel <- downloadHandler(
     filename = function() {
       prog_name <- tryCatch(
         gsub("[^A-Za-z0-9_-]", "_", rv$program$name %||% "program"),
         error = \(e) "program")
-      paste0(prog_name, "_", format(Sys.Date(), "%Y%m%d"), ".xlsx")
+      paste0(prog_name, "_", format(Sys.Date(), "%Y%m%d"), ".csv")
     },
     content = function(file) {
       req(rv$token, rv$program)
       pid <- rv$program$id
 
-      # Fetch workouts + exercises with exercise names
       wkts <- tryCatch(
         sb_select("workouts",
           sprintf("?program_id=eq.%s&order=week_number,session_number", pid),
@@ -527,69 +526,40 @@ setup_program_server <- function(input, output, session, rv) {
         error = \(e) NULL)
 
       if (is.null(wkts) || nrow(wkts) == 0) {
-        # Return empty workbook with message
-        wb <- createWorkbook()
-        addWorksheet(wb, "Program")
-        writeData(wb, "Program", data.frame(Note = "No workout data found."))
-        saveWorkbook(wb, file, overwrite = TRUE)
+        write.csv(data.frame(Note = "No workout data found."), file, row.names = FALSE)
         return()
       }
 
-      wb <- createWorkbook()
-
-      for (i in seq_len(nrow(wkts))) {
-        wo <- wkts[i, ]
-        sheet_name <- paste0("W", wo$week_number, "D", wo$session_number)
-
+      all_rows <- do.call(rbind, lapply(seq_len(nrow(wkts)), function(i) {
+        wo  <- wkts[i, ]
         exs <- tryCatch(
           sb_select("workout_exercises",
             sprintf("?workout_id=eq.%s&select=*,exercises(*)&order=exercise_order", wo$id),
             token = rv$token),
           error = \(e) NULL)
 
-        rows <- if (!is.null(exs) && nrow(exs) > 0) {
+        if (!is.null(exs) && nrow(exs) > 0) {
           do.call(rbind, lapply(seq_len(nrow(exs)), function(j) {
-            ex      <- exs[j, ]
-            ex_name <- tryCatch(ex$exercises$name, error = \(e) paste("Exercise", j))
+            ex <- exs[j, ]
             data.frame(
-              Exercise        = ex_name,
-              Sets            = as.integer(ex$prescribed_sets %||% NA),
-              Rep_Low         = as.integer(ex$rep_low %||% NA),
-              Rep_High        = as.integer(ex$rep_high %||% NA),
-              RPE             = ex$rpe_target %||% "",
-              Set_Type        = ex$set_type %||% "normal",
-              Superset_Group  = ex$superset_group %||% "",
-              Notes           = ex$notes %||% "",
+              Week          = as.integer(wo$week_number),
+              Day           = as.integer(wo$session_number),
+              Session       = as.character(wo$session_label %||% ""),
+              Exercise      = tryCatch(ex$exercises$name, error = \(e) paste("Exercise", j)),
+              Sets          = as.integer(ex$prescribed_sets %||% NA),
+              Rep_Low       = as.integer(ex$rep_low  %||% NA),
+              Rep_High      = as.integer(ex$rep_high %||% NA),
+              RPE           = ex$rpe_target   %||% "",
+              Set_Type      = ex$set_type     %||% "normal",
+              Superset      = ex$superset_group %||% "",
               stringsAsFactors = FALSE
             )
           }))
-        } else {
-          data.frame(Exercise = "No exercises", Sets = NA, Rep_Low = NA,
-                     Rep_High = NA, RPE = "", Set_Type = "", Superset_Group = "",
-                     Notes = "", stringsAsFactors = FALSE)
-        }
+        } else NULL
+      }))
 
-        addWorksheet(wb, sheet_name)
-
-        # Sheet header
-        writeData(wb, sheet_name,
-                  data.frame(Info = paste0(
-                    rv$program$name, "  |  Week ", wo$week_number,
-                    "  Day ", wo$session_number, " — ", wo$session_label %||% ""
-                  )),
-                  startRow = 1, colNames = FALSE)
-
-        writeData(wb, sheet_name, rows, startRow = 3)
-
-        # Bold the header row
-        addStyle(wb, sheet_name,
-                 style = createStyle(textDecoration = "bold"),
-                 rows = 3, cols = seq_len(ncol(rows)), gridExpand = TRUE)
-        setColWidths(wb, sheet_name, cols = 1:ncol(rows),
-                     widths = c(28, 6, 8, 8, 6, 10, 14, 30))
-      }
-
-      saveWorkbook(wb, file, overwrite = TRUE)
+      if (is.null(all_rows)) all_rows <- data.frame(Note = "No exercise data found.")
+      write.csv(all_rows, file, row.names = FALSE)
     }
   )
 }
