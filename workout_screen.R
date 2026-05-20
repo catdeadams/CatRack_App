@@ -7,10 +7,13 @@
 
 # ── TIMER JS ─────────────────────────────────────────────────
 rest_timer_js <- "
-var catrackTimer      = null;
-var catrackSeconds    = 0;
-var catrackTotal      = 0;
-var catrackLastTotal  = 0;
+// Use window globals so the timer state persists across Shiny re-renders.
+// var declarations reset to null each re-render, causing multiple orphan intervals
+// that all fire vibrate simultaneously when they expire.
+if (typeof window.catrackTimer     === 'undefined') window.catrackTimer     = null;
+if (typeof window.catrackSeconds   === 'undefined') window.catrackSeconds   = 0;
+if (typeof window.catrackTotal     === 'undefined') window.catrackTotal     = 0;
+if (typeof window.catrackLastTotal === 'undefined') window.catrackLastTotal = 0;
 
 function showTimerSection() {
   var el = document.getElementById('rest-timer-section');
@@ -21,40 +24,42 @@ function hideTimerSection() {
   if (el) el.style.display = 'none';
 }
 function startRestTimer(seconds) {
-  clearInterval(catrackTimer);
-  catrackLastTotal = seconds;
-  catrackSeconds   = seconds;
-  catrackTotal     = seconds;
+  clearInterval(window.catrackTimer);
+  window.catrackLastTotal = seconds;
+  window.catrackSeconds   = seconds;
+  window.catrackTotal     = seconds;
   showTimerSection();
   updateTimerDisplay();
-  catrackTimer = setInterval(function() {
-    catrackSeconds--;
+  window.catrackTimer = setInterval(function() {
+    window.catrackSeconds--;
     updateTimerDisplay();
-    if (catrackSeconds <= 0) {
-      clearInterval(catrackTimer);
+    if (window.catrackSeconds <= 0) {
+      clearInterval(window.catrackTimer);
+      window.catrackTimer = null;
       var bar  = document.getElementById('rest-timer-bar');
       var disp = document.getElementById('rest-timer-display');
       if (bar)  bar.style.width = '0%';
       if (disp) { disp.innerText = 'Rest done!'; disp.style.color = '#1D9E75'; }
-      if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
       setTimeout(hideTimerSection, 3000);
     }
   }, 1000);
 }
 function restartTimer() {
-  if (catrackLastTotal > 0) startRestTimer(catrackLastTotal);
+  if (window.catrackLastTotal > 0) startRestTimer(window.catrackLastTotal);
 }
 function updateTimerDisplay() {
-  var m   = Math.floor(catrackSeconds / 60);
-  var s   = catrackSeconds % 60;
-  var pct = catrackTotal > 0 ? Math.round(100 * catrackSeconds / catrackTotal) : 100;
+  var m   = Math.floor(window.catrackSeconds / 60);
+  var s   = window.catrackSeconds % 60;
+  var pct = window.catrackTotal > 0 ? Math.round(100 * window.catrackSeconds / window.catrackTotal) : 100;
   var disp = document.getElementById('rest-timer-display');
   var bar  = document.getElementById('rest-timer-bar');
   if (disp) { disp.innerText = m + ':' + (s < 10 ? '0' : '') + s; disp.style.color = '#f0f0f0'; }
   if (bar)  bar.style.width = pct + '%';
 }
 function stopTimer() {
-  clearInterval(catrackTimer);
+  clearInterval(window.catrackTimer);
+  window.catrackTimer = null;
   hideTimerSection();
 }
 "
@@ -513,6 +518,13 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                                 "font-size:15px; font-weight:700; color:#f0f0f0;",
                                 "line-height:1.2; margin-bottom:4px;"),
                               ex_name,
+                              if (isTRUE(we$is_swapped))
+                                span(style = paste0(
+                                       "font-size:9px; color:#FF9800;",
+                                       "background:#2d1e00; border:1px solid #FF980050;",
+                                       "border-radius:4px; padding:2px 5px;",
+                                       "margin-left:6px; vertical-align:middle;"),
+                                     "SUBST"),
                               if (is_complete)
                                 span(style = "color:#1D9E75; margin-left:6px; font-size:13px;",
                                      "✓")),
@@ -592,6 +604,14 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                     div(style = "font-size:11px; color:#777; margin-bottom:8px;",
                         paste0(we$warmup_sets, " warm-up set(s) before working sets")),
 
+                  # Drop set notice
+                  if (!is.null(we$set_type) && !is.na(we$set_type) && we$set_type == "drop_set")
+                    div(style = paste0(
+                          "background:#1a1200; border-left:2px solid #FF9800;",
+                          "border-radius:0 7px 7px 0; padding:6px 10px;",
+                          "font-size:11px; color:#FF9800; margin-bottom:8px;"),
+                        "Last set: DROP SET — reduce weight ~50% and push for max reps"),
+
                   # ── Set logging grid ─────────────────────────────────
                   div(
                     # Column headers
@@ -612,8 +632,16 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                       set_key   <- paste0(we$id, "_s", s)
                       log_entry <- if (s <= length(we_logs)) we_logs[[s]] else NULL
                       is_logged <- !is.null(log_entry)
+                      is_drop   <- !is.null(we$set_type) && !is.na(we$set_type) &&
+                                   we$set_type == "drop_set" && s == we$prescribed_sets
 
                       def_weight <- if (is_logged) log_entry$weight_lbs
+                        else if (is_drop && s > 1 && length(we_logs) >= s - 1) {
+                          # Pre-fill drop set at ~50% of previous set
+                          prev_w <- we_logs[[s-1]]$weight_lbs
+                          if (!is.null(prev_w) && !is.na(prev_w)) round(prev_w * 0.5 / 2.5) * 2.5
+                          else NA
+                        }
                         else if (s > 1 && length(we_logs) >= s - 1) we_logs[[s-1]]$weight_lbs
                         else if (!is.null(last)) last$weight_lbs
                         else NA
@@ -623,24 +651,29 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                       def_rpe  <- if (is_logged) log_entry$rpe_actual
                         else if (s > 1 && length(we_logs) >= s - 1) we_logs[[s-1]]$rpe_actual
                         else if (!is.null(last) && !is.na(last$rpe_actual))
-                          round(last$rpe_actual)
+                          as.integer(round(last$rpe_actual))
                         else NA
 
-                      input_bg  <- if (is_logged) "#071a10" else "#0d0d0d"
-                      input_bdr <- if (is_logged) "#0F6E56" else "#1e1e1e"
+                      input_bg  <- if (is_logged) "#071a10" else if (is_drop) "#1a1200" else "#0d0d0d"
+                      input_bdr <- if (is_logged) "#0F6E56" else if (is_drop) "#FF9800" else "#1e1e1e"
 
                       div(style = paste0(
                             "display:grid;",
                             "grid-template-columns:24px 1fr 1fr 50px 34px;",
                             "gap:4px; align-items:center;",
                             "padding:4px 2px; border-radius:7px; margin-bottom:3px;",
-                            if (is_logged) " background:#071a10;" else ""),
+                            if (is_logged) " background:#071a10;"
+                            else if (is_drop) " background:#1a1200;"
+                            else ""),
 
-                          # Set number
+                          # Set number (shows "DROP" for drop set row)
                           div(style = paste0(
-                                "font-size:12px; font-weight:700; text-align:center; ",
-                                if (is_logged) "color:#1D9E75;" else "color:#777;"),
-                              s),
+                                "font-size:10px; font-weight:700; text-align:center; ",
+                                if (is_logged && is_drop) "color:#FF9800;"
+                                else if (is_logged) "color:#1D9E75;"
+                                else if (is_drop) "color:#FF9800;"
+                                else "color:#777;"),
+                              if (is_drop) "DROP" else s),
 
                           # Weight input
                           tags$input(
@@ -697,16 +730,22 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           ),
 
                           # Log / check button
+                          # Completed = filled green ✓ (static)
+                          # Incomplete = empty grey circle (tappable)
                           if (is_logged)
-                            div(style = "text-align:center; color:#1D9E75; font-size:17px;", "✓")
+                            div(style = paste0(
+                                  "background:#1D9E75; border-radius:7px;",
+                                  "width:34px; height:34px; display:flex;",
+                                  "align-items:center; justify-content:center;"),
+                                div(style = "color:#fff; font-size:17px; font-weight:700;", "✓"))
                           else
                             tags$button(
-                              "✓",
+                              "○",
                               style = paste0(
-                                "background:#1D9E75; color:#fff; border:none; border-radius:7px;",
-                                "font-size:15px; font-weight:700; cursor:pointer;",
+                                "background:#1a1a1a; color:#555; border:1.5px solid #333;",
+                                "border-radius:7px; font-size:18px; cursor:pointer;",
                                 "width:34px; height:34px; display:flex;",
-                                "align-items:center; justify-content:center;"),
+                                "align-items:center; justify-content:center; line-height:1;"),
                               onclick = sprintf(
                                 "Shiny.setInputValue('log_set','%s|%d',{priority:'event'})",
                                 we$id, s))
@@ -837,53 +876,59 @@ swap_modal_ui <- function(we_id, exercise_id, suggestions) {
                 "No substitutes found with your equipment.")
           } else {
             tagList(
+              # Each suggestion card has its own scope buttons
               lapply(seq_along(suggestions), function(i) {
                 s           <- suggestions[[i]]
                 muscles_str <- tryCatch(
-                  paste(unlist(s$primary_muscles), collapse = ", "),
+                  tools::toTitleCase(gsub("_", " ",
+                    paste(unlist(s$primary_muscles), collapse = ", "))),
                   error = \(e) "")
-                label <- if (i == 1) "Best match" else if (i == 2) "Alternative" else "Option"
+                match_label <- if (i == 1) "Best match" else if (i == 2) "Alternative" else "Option"
                 div(style = paste0(
                       "background:#1a1a1a; border:1px solid #242424;",
-                      "border-radius:12px; padding:14px 16px; margin-bottom:8px;",
-                      "cursor:pointer; transition:border-color 0.15s;"),
-                    onclick = sprintf(
-                      "Shiny.setInputValue('confirm_swap','%s|%s|session',{priority:'event'})",
-                      we_id, s$id),
-                    div(style = "display:flex; justify-content:space-between; align-items:flex-start;",
+                      "border-radius:12px; padding:14px 16px; margin-bottom:10px;"),
+                    div(style = "display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;",
                         div(style = "font-size:14px; font-weight:600; color:#f0f0f0;",
                             s$name),
                         div(style = paste0(
                               "font-size:10px; color:#1D9E75; font-weight:700;",
                               "text-transform:uppercase; letter-spacing:0.07em;",
                               "margin-left:8px; flex-shrink:0;"),
-                            label)
+                            match_label)
                     ),
-                    div(style = "font-size:11px; color:#444; margin-top:5px;",
-                        paste0("🎯 ",
-                               tools::toTitleCase(gsub("_", " ", muscles_str)),
-                               " · ",
-                               s$default_rep_range_low %||% 8, "–",
-                               s$default_rep_range_high %||% 12, " reps"))
+                    div(style = "font-size:11px; color:#555; margin-bottom:10px;",
+                        paste0(muscles_str,
+                               " · ", s$default_rep_range_low %||% 8,
+                               "–", s$default_rep_range_high %||% 12, " reps")),
+                    # Scope buttons under each option
+                    div(style = "display:flex; gap:6px;",
+                        tags$button(
+                          "This session",
+                          style = paste0(
+                            "flex:1; background:#1e1e1e; color:#aaa;",
+                            "border:1px solid #333; border-radius:8px;",
+                            "padding:8px; font-size:12px; cursor:pointer;"),
+                          onclick = sprintf(
+                            "Shiny.setInputValue('confirm_swap','%s|%s|session',{priority:'event'})",
+                            we_id, s$id)),
+                        tags$button(
+                          "Rest of block",
+                          style = paste0(
+                            "flex:1; background:#0a1f16; color:#1D9E75;",
+                            "border:1px solid #1D9E75; border-radius:8px;",
+                            "padding:8px; font-size:12px; font-weight:600; cursor:pointer;"),
+                          onclick = sprintf(
+                            "Shiny.setInputValue('confirm_swap','%s|%s|block',{priority:'event'})",
+                            we_id, s$id))
+                    )
                 )
               }),
-              div(style = "display:flex; gap:8px; margin-top:10px;",
-                  tags$button(
-                    "Cancel",
-                    style = paste0(
-                      "flex:1; background:#1e1e1e; color:#666; border:none;",
-                      "border-radius:10px; padding:12px; font-size:13px; cursor:pointer;"),
-                    onclick = "Shiny.setInputValue('cancel_swap', 1, {priority:'event'})"),
-                  tags$button(
-                    "Swap rest of block →",
-                    style = paste0(
-                      "flex:2; background:#0a1f16; color:#1D9E75;",
-                      "border:1px solid #1D9E75; border-radius:10px;",
-                      "padding:12px; font-size:13px; font-weight:600; cursor:pointer;"),
-                    onclick = sprintf(
-                      "Shiny.setInputValue('confirm_swap','%s|%s|block',{priority:'event'})",
-                      we_id, suggestions[[1]]$id))
-              )
+              tags$button(
+                "Cancel",
+                style = paste0(
+                  "width:100%; background:#1e1e1e; color:#555; border:none;",
+                  "border-radius:10px; padding:12px; font-size:13px; cursor:pointer; margin-top:4px;"),
+                onclick = "Shiny.setInputValue('cancel_swap', 1, {priority:'event'})")
             )
           }
       )
@@ -983,12 +1028,18 @@ setup_workout_server <- function(input, output, session, rv) {
     rpe_key  <- paste0("rpe_", we_id, "_s", set_num)
     note_key <- paste0("note_", we_id)
 
-    weight <- tryCatch(as.numeric(input[[set_key]]),  error = \(e) NA)
-    reps   <- tryCatch(as.integer(input[[reps_key]]), error = \(e) NA)
-    rpe    <- tryCatch(as.numeric(input[[rpe_key]]),  error = \(e) NA)
+    weight <- tryCatch(as.numeric(input[[set_key]]),   error = \(e) NA)
+    reps   <- tryCatch({
+      v <- as.numeric(input[[reps_key]])
+      if (is.na(v)) NA_integer_ else as.integer(round(v))
+    }, error = \(e) NA_integer_)
+    rpe    <- tryCatch({
+      v <- as.numeric(input[[rpe_key]])
+      if (is.na(v)) NA_integer_ else as.integer(min(10L, max(0L, round(v))))
+    }, error = \(e) NA_integer_)
     notes  <- input[[note_key]] %||% ""
 
-    if (is.na(reps)) {
+    if (is.na(reps) || reps <= 0) {
       showNotification("Please enter reps before logging.", type = "warning")
       return()
     }
@@ -999,7 +1050,7 @@ setup_workout_server <- function(input, output, session, rv) {
       set_number          = as.integer(set_num),
       weight_lbs          = if (is.na(weight)) NULL else weight,
       reps_completed      = as.integer(reps),
-      rpe_actual          = if (is.na(rpe)) NULL else rpe,
+      rpe_actual          = if (is.na(rpe)) NULL else as.integer(rpe),
       is_warmup           = FALSE,
       notes               = if (nchar(notes) > 0) notes else NULL
     )
@@ -1048,7 +1099,8 @@ setup_workout_server <- function(input, output, session, rv) {
       else NA_integer_,
       error = \(e) NA_integer_)
 
-    update_data <- list(completed_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ"))
+    completed_at_str <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ")
+    update_data <- list(completed_at = completed_at_str)
     if (!is.na(duration_mins)) update_data$duration_minutes <- duration_mins
 
     resp <- sb_update("workouts",
@@ -1057,7 +1109,6 @@ setup_workout_server <- function(input, output, session, rv) {
                       token = rv$token)
 
     message(sprintf("Finish session response: %d", resp$status_code))
-    showNotification("Session complete! Great work 💪", type = "message", duration = 4)
 
     rv$all_logs <- NULL
     rv$prs      <- NULL
@@ -1071,11 +1122,22 @@ setup_workout_server <- function(input, output, session, rv) {
       if (safe_nrow(workouts) > 0) rv$workouts <- workouts
     }, error = \(e) message("Reload workouts error: ", e$message))
 
+    # Build summary data before clearing in-memory state
+    rv$summary_data <- list(
+      workout_id    = rv$active_workout_id,
+      workout       = rv$active_workout,
+      exercises     = rv$active_exercises,
+      set_logs      = rv$set_logs,
+      duration_mins = duration_mins,
+      completed_at  = completed_at_str,
+      notes         = ""
+    )
+
     rv$active_workout_id <- NULL
     rv$active_workout    <- NULL
     rv$active_exercises  <- NULL
     rv$set_logs          <- list()
-    rv$page              <- "dashboard"
+    rv$page              <- "summary"
     rv$nav_tab           <- "dashboard"
   })
 
@@ -1125,9 +1187,18 @@ setup_workout_server <- function(input, output, session, rv) {
     new_ex_id <- parts[2]
     scope     <- parts[3]
 
+    # Detect if swapping back to original exercise; if so, clear the SUBST badge
+    orig_swap <- tryCatch(
+      sb_select("exercise_swaps",
+                sprintf("?workout_exercise_id=eq.%s&order=created_at.desc&limit=1", we_id),
+                token = rv$token),
+      error = \(e) NULL)
+    is_back_to_original <- !is.null(orig_swap) && nrow(orig_swap) > 0 &&
+      orig_swap$original_exercise_id[1] == new_ex_id
+
     sb_update("workout_exercises",
               sprintf("?id=eq.%s", we_id),
-              list(exercise_id = new_ex_id, is_swapped = TRUE),
+              list(exercise_id = new_ex_id, is_swapped = !is_back_to_original),
               token = rv$token)
 
     sb_insert("exercise_swaps",

@@ -8,6 +8,7 @@ server <- function(input, output, session) {
   rv <- reactiveValues(
     # Auth
     token        = NULL,
+    refresh_token = NULL,
     user_id      = NULL,
     user_email   = NULL,
     auth_mode    = "login",   # "login" | "signup"
@@ -73,7 +74,11 @@ server <- function(input, output, session) {
     swap_suggestions   = NULL,
     session_start_time = NULL,
     exercise_gifs      = list(),  # exercise_id -> gif_url, session cache
-    exercise_history   = list()   # exercise_id -> data.frame of recent sessions
+    exercise_history   = list(),  # exercise_id -> data.frame of recent sessions
+
+    # Workout summary (shown after finish_session)
+    summary_data       = NULL,
+    summary_notes_saved = FALSE
   )
   
   # ── Helper: safe nrow that never returns NULL ───────────────
@@ -196,14 +201,23 @@ server <- function(input, output, session) {
     token_val <- tryCatch(result$body$access_token, error = \(e) NULL)
     
     if (result$status %in% c(200, 201) && !is.null(token_val) && nchar(token_val) > 0) {
-      rv$token      <- token_val
-      rv$user_id    <- tryCatch(result$body$user$id,    error = \(e) NULL)
-      rv$user_email <- tryCatch(result$body$user$email, error = \(e) NULL)
-      
+      rv$token         <- token_val
+      rv$refresh_token <- tryCatch(result$body$refresh_token, error = \(e) NULL)
+      rv$user_id       <- tryCatch(result$body$user$id,    error = \(e) NULL)
+      rv$user_email    <- tryCatch(result$body$user$email, error = \(e) NULL)
+
+      # Persist refresh token to localStorage so screen-timeout doesn't sign out
+      if (!is.null(rv$refresh_token) && nchar(rv$refresh_token) > 0) {
+        session$sendCustomMessage("save_auth_session", list(
+          refresh_token = rv$refresh_token,
+          email         = rv$user_email %||% ""
+        ))
+      }
+
       if (identical(input$auth_action, "signup")) {
         rv$ob_name <- trimws(input$signup_name %||% "")
       }
-      
+
       load_user_data()
     } else {
       msg <- tryCatch(
@@ -287,7 +301,8 @@ server <- function(input, output, session) {
       rv$ob_step <- rv$ob_step + 1L
     } else {
       # Final step: save profile and generate program
-      rv$ob_name      <- trimws(input$display_name)
+      if (isTRUE(rv$ob_generating)) return()  # prevent double-fire on rapid taps
+      rv$ob_name       <- trimws(input$display_name)
       rv$ob_generating <- TRUE
       
       withProgress(message = "Building your 12-week program...", value = 0, {
@@ -492,6 +507,14 @@ server <- function(input, output, session) {
                                               skip_modal_ui(rv$skip_workout_id, rv$skip_session_label %||% "Session")
                            ),
                            
+                           "summary" = div(class = "ct-content-with-nav",
+                                           if (!is.null(rv$summary_data))
+                                             workout_summary_ui(rv$summary_data, rv$program)
+                                           else
+                                             div(style = "padding:40px; text-align:center; color:#555;",
+                                                 "No summary available.")
+                           ),
+
                            "password_reset" = div(style = "padding:20px;",
                                                   password_reset_ui(error_msg = rv$pw_reset_error)
                            ),
@@ -516,6 +539,7 @@ server <- function(input, output, session) {
   setup_progress_server(input, output, session, rv)
   setup_program_server(input, output, session, rv)
   setup_profile_server(input, output, session, rv)
+  setup_summary_server(input, output, session, rv)
   
   # ── Timer JS handler output ──────────────────────────────────
   output$timer_js <- renderUI({
@@ -529,9 +553,35 @@ server <- function(input, output, session) {
     ))
   })
   
+  # ── Session restore from localStorage refresh token ────────
+  observeEvent(input$restore_session_refresh, {
+    req(!is.null(input$restore_session_refresh), nchar(input$restore_session_refresh) > 0)
+    if (!is.null(rv$token)) return()  # already logged in
+
+    result <- sb_refresh(input$restore_session_refresh)
+    if (result$status %in% c(200, 201)) {
+      new_token <- tryCatch(result$body$access_token, error = \(e) NULL)
+      if (!is.null(new_token) && nchar(new_token) > 0) {
+        rv$token         <- new_token
+        rv$refresh_token <- tryCatch(result$body$refresh_token, error = \(e) NULL)
+        rv$user_id       <- tryCatch(result$body$user$id,    error = \(e) NULL)
+        rv$user_email    <- tryCatch(result$body$user$email, error = \(e) NULL)
+        # Save rotated refresh token
+        session$sendCustomMessage("save_auth_session", list(
+          refresh_token = rv$refresh_token %||% input$restore_session_refresh,
+          email         = rv$user_email %||% ""
+        ))
+        load_user_data()
+      }
+    }
+    # If refresh fails, stay on login page — localStorage cleared by user on next explicit login
+  })
+
   # ── Logout ─────────────────────────────────────────────────
   observeEvent(input$logout, {
+    session$sendCustomMessage("clear_auth_session", list())
     rv$token        <- NULL
+    rv$refresh_token <- NULL
     rv$user_id      <- NULL
     rv$user_email   <- NULL
     rv$profile      <- NULL

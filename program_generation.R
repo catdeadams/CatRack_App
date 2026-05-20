@@ -83,9 +83,13 @@ sb_insert_one <- function(table, row) {
 # ============================================================
 get_goal_params <- function(goal, difficulty) {
   # Base parameters by goal (following Nippard MEV/MRV framework)
+  # Rep ranges follow standard progressive overload logic:
+  # When you hit the TOP of the range consistently for all sets, add weight.
+  # Compound: 8-12, Isolation: 12-15, Heavy: 5-8, Strength: 3-5 / 5-8
   base <- switch(goal,
                  hypertrophy = list(
-                   rep_low = 8L, rep_high = 15L, rpe_target = 8.0,
+                   rep_low = 8L, rep_high = 12L, rpe_target = 8.0,
+                   iso_rep_low = 12L, iso_rep_high = 15L,
                    compound_sets = 3L, isolation_sets = 2L,
                    weekly_sets = list(
                      quads = 10L, hamstrings = 9L, glutes = 9L,
@@ -95,7 +99,8 @@ get_goal_params <- function(goal, difficulty) {
                    )
                  ),
                  strength = list(
-                   rep_low = 3L, rep_high = 6L, rpe_target = 8.5,
+                   rep_low = 3L, rep_high = 5L, rpe_target = 8.5,
+                   iso_rep_low = 8L, iso_rep_high = 12L,
                    compound_sets = 4L, isolation_sets = 2L,
                    weekly_sets = list(
                      quads = 8L, hamstrings = 8L, glutes = 6L,
@@ -105,7 +110,8 @@ get_goal_params <- function(goal, difficulty) {
                    )
                  ),
                  fat_loss = list(
-                   rep_low = 10L, rep_high = 20L, rpe_target = 8.0,
+                   rep_low = 10L, rep_high = 15L, rpe_target = 8.0,
+                   iso_rep_low = 15L, iso_rep_high = 20L,
                    compound_sets = 3L, isolation_sets = 2L,
                    weekly_sets = list(
                      quads = 9L, hamstrings = 8L, glutes = 8L,
@@ -115,7 +121,8 @@ get_goal_params <- function(goal, difficulty) {
                    )
                  ),
                  pull_up = list(
-                   rep_low = 5L, rep_high = 10L, rpe_target = 8.5,
+                   rep_low = 5L, rep_high = 8L, rpe_target = 8.5,
+                   iso_rep_low = 8L, iso_rep_high = 12L,
                    compound_sets = 4L, isolation_sets = 2L,
                    weekly_sets = list(
                      quads = 6L, hamstrings = 6L, glutes = 6L,
@@ -125,7 +132,8 @@ get_goal_params <- function(goal, difficulty) {
                    )
                  ),
                  running_support = list(
-                   rep_low = 8L, rep_high = 15L, rpe_target = 8.0,
+                   rep_low = 8L, rep_high = 12L, rpe_target = 8.0,
+                   iso_rep_low = 12L, iso_rep_high = 15L,
                    compound_sets = 3L, isolation_sets = 2L,
                    weekly_sets = list(
                      quads = 10L, hamstrings = 10L, glutes = 12L,
@@ -135,7 +143,8 @@ get_goal_params <- function(goal, difficulty) {
                    )
                  ),
                  functional = list(
-                   rep_low = 8L, rep_high = 15L, rpe_target = 8.0,
+                   rep_low = 8L, rep_high = 12L, rpe_target = 8.0,
+                   iso_rep_low = 12L, iso_rep_high = 15L,
                    compound_sets = 3L, isolation_sets = 2L,
                    weekly_sets = list(
                      quads = 8L, hamstrings = 8L, glutes = 9L,
@@ -147,6 +156,7 @@ get_goal_params <- function(goal, difficulty) {
                  # Default fallback
                  list(
                    rep_low = 8L, rep_high = 12L, rpe_target = 8.0,
+                   iso_rep_low = 12L, iso_rep_high = 15L,
                    compound_sets = 3L, isolation_sets = 2L,
                    weekly_sets = list(
                      quads = 9L, hamstrings = 8L, glutes = 9L,
@@ -297,80 +307,82 @@ pick_exercise <- function(exercises, movement_patterns = NULL, categories = NULL
 build_session_slots <- function(session_type, goal, difficulty) {
   p <- get_goal_params(goal, difficulty)
   
-  # Heavy compound: strength-style loading
+  # Heavy compound: 5-8 reps (strength-hypertrophy overlap), 3-5 for strength goal
   heavy_slot <- function(movement_patterns, categories = NULL, label = "Main Compound") {
-    rep_low  <- if (goal == "strength") 3L else if (goal %in% c("pull_up","strength")) 4L else 5L
+    rep_low  <- if (goal == "strength") 3L else 5L
     rep_high <- if (goal == "strength") 5L else 8L
     list(
-      label            = label,
+      label             = label,
       movement_patterns = movement_patterns,
       categories        = categories,
-      prefer_compound  = TRUE,
-      sets             = p$heavy_sets + 1L,  # +1 because we drop to back-off
-      rep_range_low    = rep_low,
-      rep_range_high   = rep_high,
-      rpe_target       = p$rpe_target + 0.5,
-      rest_seconds     = 180L,
-      set_type         = "working",
-      warmup_sets      = 2L,
-      is_heavy         = TRUE
+      prefer_compound   = TRUE,
+      sets              = p$heavy_sets + 1L,
+      rep_range_low     = rep_low,
+      rep_range_high    = rep_high,
+      rpe_target        = p$rpe_target + 0.5,
+      rest_seconds      = 180L,
+      set_type          = "working",
+      warmup_sets       = 2L,
+      is_heavy          = TRUE
     )
   }
-  
-  # Back-off set: same movement, lighter, more reps
+
+  # Back-off: same movement, 8-12 reps (hypertrophy zone)
   backoff_slot <- function(movement_patterns, categories = NULL, label = "Back-off") {
+    bo_low  <- if (goal == "strength") 5L else 8L
+    bo_high <- if (goal == "strength") 8L else 12L
     list(
-      label            = label,
+      label             = label,
       movement_patterns = movement_patterns,
       categories        = categories,
-      prefer_compound  = TRUE,
-      sets             = 2L,
-      rep_range_low    = p$rep_low - 2L,
-      rep_range_high   = p$rep_low + 2L,
-      rpe_target       = p$rpe_target - 0.5,
-      rest_seconds     = 150L,
-      set_type         = "working",
-      warmup_sets      = 0L,
-      is_heavy         = FALSE,
-      reuse_heavy      = TRUE  # pick same exercise as heavy slot
+      prefer_compound   = TRUE,
+      sets              = 2L,
+      rep_range_low     = bo_low,
+      rep_range_high    = bo_high,
+      rpe_target        = p$rpe_target - 0.5,
+      rest_seconds      = 150L,
+      set_type          = "working",
+      warmup_sets       = 0L,
+      is_heavy          = FALSE,
+      reuse_heavy       = TRUE  # pick same exercise as heavy slot
     )
   }
-  
-  # Working compound: moderate load, hypertrophy reps
+
+  # Working compound: goal's standard rep range (8-12 for hypertrophy)
   compound_slot <- function(movement_patterns, categories = NULL, label = "Compound") {
     list(
-      label            = label,
+      label             = label,
       movement_patterns = movement_patterns,
       categories        = categories,
-      prefer_compound  = TRUE,
-      sets             = p$compound_sets,
-      rep_range_low    = p$rep_low,
-      rep_range_high   = p$rep_high,
-      rpe_target       = p$rpe_target,
-      rest_seconds     = 150L,
-      set_type         = "working",
-      warmup_sets      = 1L,
-      is_heavy         = FALSE
+      prefer_compound   = TRUE,
+      sets              = p$compound_sets,
+      rep_range_low     = p$rep_low,
+      rep_range_high    = p$rep_high,
+      rpe_target        = p$rpe_target,
+      rest_seconds      = 150L,
+      set_type          = "working",
+      warmup_sets       = 1L,
+      is_heavy          = FALSE
     )
   }
-  
-  # Isolation / accessory
+
+  # Isolation / accessory: higher rep range (12-15 for hypertrophy)
   iso_slot <- function(movement_patterns, categories = NULL, label = "Accessory",
                        drop = FALSE, superset_group = NA_character_) {
     list(
-      label            = label,
+      label             = label,
       movement_patterns = movement_patterns,
       categories        = categories,
-      prefer_compound  = FALSE,
-      sets             = p$isolation_sets,
-      rep_range_low    = p$rep_low + 2L,
-      rep_range_high   = p$rep_high + 3L,
-      rpe_target       = p$rpe_target + 0.5,
-      rest_seconds     = 90L,
-      set_type         = if (drop) "drop_set" else "working",
-      warmup_sets      = 0L,
-      superset_group   = superset_group,
-      is_heavy         = FALSE
+      prefer_compound   = FALSE,
+      sets              = p$isolation_sets,
+      rep_range_low     = p$iso_rep_low  %||% (p$rep_low + 4L),
+      rep_range_high    = p$iso_rep_high %||% (p$rep_high + 3L),
+      rpe_target        = p$rpe_target + 0.5,
+      rest_seconds      = 90L,
+      set_type          = if (drop) "drop_set" else "working",
+      warmup_sets       = 0L,
+      superset_group    = superset_group,
+      is_heavy          = FALSE
     )
   }
   
@@ -456,7 +468,8 @@ build_session_slots <- function(session_type, goal, difficulty) {
            compound_slot(c("hinge"), label = "Hinge"),
            compound_slot(c("horizontal_pull"), label = "Row"),
            iso_slot(c("knee_flexion"), c("leg_curl"), label = "Leg Curl", drop = TRUE),
-           iso_slot(c("shoulder_abduction","rear_delt_fly"), label = "Delt Accessory"),
+           # Use rear_delt_fly only (not shoulder_abduction) so no lateral raise / shrug confusion
+           iso_slot(c("rear_delt_fly"), c("rear_delt"), label = "Rear Delt"),
            iso_slot(c("plantarflexion"), c("calves"), label = "Calves",
                     superset_group = "B"),
            iso_slot(c("spinal_flexion"), c("core"), label = "Core",

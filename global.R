@@ -10,13 +10,7 @@ library(jsonlite)
 library(dplyr)
 library(lubridate)
 library(plotly)
-
-for (f in c("program_generation.R", "workout_screen.R", "progress_screen.R", "program_screen.R", "profile_screen.R")) {
-  tryCatch(
-    source(f),
-    error = function(e) stop("Error sourcing ", f, ": ", conditionMessage(e))
-  )
-}
+library(openxlsx)
 
 # ── CREDENTIALS ─────────────────────────────────────────────
 # All secrets come exclusively from environment variables.
@@ -53,7 +47,8 @@ if (length(missing_keys) > 0)
   a
 }
 
-for (f in c("program_generation.R", "workout_screen.R", "progress_screen.R", "program_screen.R", "profile_screen.R")) {
+for (f in c("program_generation.R", "workout_screen.R", "progress_screen.R",
+            "program_screen.R", "profile_screen.R", "workout_summary.R")) {
   tryCatch(
     source(f),
     error = function(e) stop("Error sourcing ", f, ": ", conditionMessage(e))
@@ -147,6 +142,19 @@ sb_delete <- function(table, filter_params, token = NULL) {
   .sb_req(paste0(table, filter_params), token) |>
     req_method("DELETE") |>
     req_perform()
+}
+
+sb_refresh <- function(refresh_token) {
+  resp <- request(paste0(SUPABASE_URL, "/auth/v1/token?grant_type=refresh_token")) |>
+    req_headers(
+      "apikey"       = SUPABASE_ANON_KEY,
+      "Content-Type" = "application/json"
+    ) |>
+    req_body_raw(toJSON(list(refresh_token = refresh_token), auto_unbox = TRUE)) |>
+    req_method("POST") |>
+    req_error(is_error = \(r) FALSE) |>
+    req_perform()
+  list(status = resp$status_code, body = tryCatch(fromJSON(resp_body_string(resp)), error = \(e) list()))
 }
 
 # ── CONSTANTS ────────────────────────────────────────────────
@@ -331,9 +339,35 @@ catrack_logo_svg <- function(size = "full", color = "#1D9E75") {
 
 login_page_ui <- function(mode = "login") {
   div(class = "ct-onboard-step",
-      # Catch Supabase password recovery token from URL hash on page load
+      # Session persistence + password recovery JS
       tags$script(HTML('
       (function() {
+        // ── localStorage session restore ──────────────────────────
+        // Saves/restores the Supabase refresh token so the user
+        // stays logged in after screen timeout or browser reload.
+        function tryRestore() {
+          if (!window.Shiny) { setTimeout(tryRestore, 150); return; }
+          var rt = localStorage.getItem("catrack_refresh_token");
+          if (rt && rt.length > 10) {
+            Shiny.setInputValue("restore_session_refresh", rt, {priority:"event"});
+          }
+        }
+        tryRestore();
+
+        if (!window._catrackHandlersRegistered) {
+          window._catrackHandlersRegistered = true;
+
+          Shiny.addCustomMessageHandler("save_auth_session", function(msg) {
+            if (msg.refresh_token) localStorage.setItem("catrack_refresh_token", msg.refresh_token);
+            if (msg.email)         localStorage.setItem("catrack_email",         msg.email);
+          });
+          Shiny.addCustomMessageHandler("clear_auth_session", function(msg) {
+            localStorage.removeItem("catrack_refresh_token");
+            localStorage.removeItem("catrack_email");
+          });
+        }
+
+        // ── Supabase password recovery from URL hash ──────────────
         var h = window.location.hash + window.location.search;
         if (h.indexOf("type=recovery") !== -1) {
           document.addEventListener("DOMContentLoaded", function() {
@@ -604,9 +638,9 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
                                       if (is_done) "completed" else if (is_today) "today" else "future")
                   
                   div(class = card_class,
-                      onclick = sprintf(
+                      onclick = if (!is_done) sprintf(
                         "Shiny.setInputValue('open_workout','%s',{priority:'event'})",
-                        wo$id),
+                        wo$id) else NULL,
                       div(style="display:flex;justify-content:space-between;align-items:flex-start;",
                           div(div(class="ct-sess-label", paste0("DAY ", wo$session_number)),
                               div(class="ct-sess-type",  wo$session_label)),
@@ -618,7 +652,15 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
                       ),
                       div(class="ct-sess-date",
                           if (!is.na(wo_date)) format(wo_date, "%b %d") else ""),
-                      if (!is_done && !is.na(wo_date) && wo_date >= Sys.Date())
+                      if (is_done)
+                        tags$button("View Summary",
+                          style=paste0("margin-top:6px;font-size:11px;color:#1D9E75;",
+                                       "background:none;border:none;cursor:pointer;padding:0;",
+                                       "text-decoration:underline;font-weight:600;"),
+                          onclick=sprintf(
+                            "Shiny.setInputValue('view_summary','%s',{priority:'event'});event.stopPropagation();",
+                            wo$id))
+                      else if (!is_done && !is.na(wo_date) && wo_date >= Sys.Date())
                         div(style="margin-top:5px;",
                             tags$button("Skip",
                                         style="font-size:10px;color:#555;background:none;border:none;
