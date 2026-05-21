@@ -115,8 +115,7 @@ sb_update_gif <- function(exercise_id, gif_url) {
 
 # ── FETCH ALL EXERCISEDB EXERCISES ───────────────────────────
 fetch_all_edb <- function() {
-  # Try the OSS endpoint first (no API key required)
-  oss_base <- "https://oss.exercisedb.dev"
+  oss_base   <- "https://oss.exercisedb.dev"
   rapid_base <- "https://exercisedb.p.rapidapi.com"
 
   rapid_headers <- if (nchar(EXERCISEDB_API_KEY) > 0)
@@ -124,65 +123,71 @@ fetch_all_edb <- function() {
          "X-RapidAPI-Host" = "exercisedb.p.rapidapi.com")
   else list()
 
-  # Determine which base URL to use
-  cat("Testing ExerciseDB endpoints...\n")
-  oss_test <- tryCatch(
-    request(paste0(oss_base, "/exercises/bodyPartList")) |>
-      req_error(is_error = \(r) FALSE) |>
-      req_perform(),
-    error = \(e) NULL)
-
-  use_oss <- !is.null(oss_test) && oss_test$status_code == 200
-  base    <- if (use_oss) oss_base else rapid_base
-  cat(sprintf("Using: %s\n\n", base))
-
-  if (!use_oss && nchar(EXERCISEDB_API_KEY) == 0)
-    stop("OSS endpoint unavailable and no EXERCISEDB_API_KEY in .Renviron")
-
-  make_req <- function(url) {
+  make_oss  <- function(url) request(url) |> req_error(is_error = \(r) FALSE)
+  make_rapid <- function(url) {
     req <- request(url) |> req_error(is_error = \(r) FALSE)
-    if (!use_oss)
-      req <- do.call(req_headers, c(list(req), rapid_headers))
+    if (length(rapid_headers) > 0) req <- do.call(req_headers, c(list(req), rapid_headers))
     req
   }
 
-  # Body part list
-  bp_resp <- req_perform(make_req(paste0(base, "/exercises/bodyPartList")))
-  if (bp_resp$status_code != 200)
-    stop("Failed to get body part list: HTTP ", bp_resp$status_code)
-  body_parts <- fromJSON(resp_body_string(bp_resp))
-  cat(sprintf("Body parts (%d): %s\n\n", length(body_parts),
-              paste(body_parts, collapse = ", ")))
-
-  all_rows <- list()
-  for (bp in body_parts) {
-    cat(sprintf("  Fetching %-15s ... ", bp))
-    Sys.sleep(0.4)
-
-    url <- sprintf("%s/exercises/bodyPart/%s?limit=500",
-                   base, utils::URLencode(bp, reserved = TRUE))
-    resp <- tryCatch(req_perform(make_req(url)), error = \(e) NULL)
-
-    if (!is.null(resp) && resp$status_code == 200) {
-      rows <- tryCatch(
-        fromJSON(resp_body_string(resp), simplifyDataFrame = TRUE),
-        error = \(e) NULL)
-      if (is.data.frame(rows) && nrow(rows) > 0 && "gifUrl" %in% names(rows)) {
-        all_rows <- c(all_rows, list(rows[, c("id", "name", "gifUrl",
-                                               "bodyPart", "equipment",
-                                               "target")]))
-        cat(sprintf("%d exercises\n", nrow(rows)))
-      } else {
-        cat("(no usable data)\n")
-      }
-    } else {
-      cat(sprintf("HTTP %s\n", if (!is.null(resp)) resp$status_code else "ERROR"))
-    }
+  parse_ex <- function(resp) {
+    if (is.null(resp) || resp$status_code != 200) return(NULL)
+    rows <- tryCatch(fromJSON(resp_body_string(resp), simplifyDataFrame = TRUE), error = \(e) NULL)
+    if (is.data.frame(rows) && nrow(rows) > 0 && "gifUrl" %in% names(rows)) {
+      keep <- intersect(c("id", "name", "gifUrl", "bodyPart", "equipment", "target"), names(rows))
+      rows[, keep]
+    } else NULL
   }
 
-  edb <- unique(do.call(rbind, all_rows))
-  cat(sprintf("\nTotal unique ExerciseDB exercises: %d\n\n", nrow(edb)))
-  edb
+  fetch_by_bodypart <- function(base, make_req_fn) {
+    bp_resp <- tryCatch(req_perform(make_req_fn(paste0(base, "/exercises/bodyPartList"))),
+                        error = \(e) NULL)
+    if (is.null(bp_resp) || bp_resp$status_code != 200) return(NULL)
+    body_parts <- tryCatch(fromJSON(resp_body_string(bp_resp)), error = \(e) NULL)
+    if (is.null(body_parts) || length(body_parts) == 0) return(NULL)
+    cat(sprintf("Body parts (%d): %s\n\n", length(body_parts), paste(body_parts, collapse = ", ")))
+    all_rows <- list()
+    for (bp in body_parts) {
+      cat(sprintf("  Fetching %-15s ... ", bp))
+      Sys.sleep(0.4)
+      url  <- sprintf("%s/exercises/bodyPart/%s?limit=500", base,
+                      utils::URLencode(bp, reserved = TRUE))
+      rows <- parse_ex(tryCatch(req_perform(make_req_fn(url)), error = \(e) NULL))
+      if (!is.null(rows)) { all_rows <- c(all_rows, list(rows)); cat(sprintf("%d exercises\n", nrow(rows))) }
+      else cat("(no usable data)\n")
+    }
+    if (length(all_rows) == 0) NULL else unique(do.call(rbind, all_rows))
+  }
+
+  # Strategy 1: OSS bulk fetch (fastest, no rate limit)
+  cat("Trying OSS bulk fetch...\n")
+  resp <- tryCatch(req_perform(make_oss(paste0(oss_base, "/exercises?limit=2000"))), error = \(e) NULL)
+  edb  <- parse_ex(resp)
+  if (!is.null(edb) && nrow(edb) > 0) {
+    cat(sprintf("OSS bulk: %d exercises loaded\n\n", nrow(edb)))
+    return(unique(edb))
+  }
+  cat(sprintf("OSS bulk failed (HTTP %s) — trying OSS by body part...\n",
+              if (!is.null(resp)) resp$status_code else "ERROR"))
+
+  # Strategy 2: OSS by body part
+  edb <- fetch_by_bodypart(oss_base, make_oss)
+  if (!is.null(edb) && nrow(edb) > 0) {
+    cat(sprintf("\nOSS by body part: %d exercises loaded\n\n", nrow(edb)))
+    return(edb)
+  }
+  cat("OSS by body part failed — trying RapidAPI...\n")
+
+  # Strategy 3: RapidAPI (requires key)
+  if (nchar(EXERCISEDB_API_KEY) == 0)
+    stop("All OSS methods failed and EXERCISEDB_API_KEY is not set in .Renviron")
+
+  edb <- fetch_by_bodypart(rapid_base, make_rapid)
+  if (!is.null(edb) && nrow(edb) > 0) {
+    cat(sprintf("\nRapidAPI: %d exercises loaded\n\n", nrow(edb)))
+    return(edb)
+  }
+  stop("RapidAPI returned no usable data. Check your EXERCISEDB_API_KEY.")
 }
 
 # ── MATCHING HELPERS ─────────────────────────────────────────
@@ -197,6 +202,9 @@ strip_prefix <- function(x) {
 
 # Return best matching ExerciseDB row for one of our exercise names
 find_match <- function(our_name, edb) {
+  if (is.null(edb) || nrow(edb) == 0)
+    return(list(row = NULL, method = "UNMATCHED"))
+
   # 1. Manual crosswalk
   manual <- MANUAL_CROSSWALK[our_name]
   if (!is.na(manual) && nchar(manual) > 0) {
