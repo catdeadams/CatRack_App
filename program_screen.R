@@ -274,10 +274,13 @@ programs_page_ui <- function(active_program, all_programs,
       )
     },
 
-    # Past programs — any program that is not the current active one
+    # Past programs — exclude the active program by ID (type-safe)
     {
-      past <- if (!is.null(all_programs) && nrow(all_programs) > 0)
-        all_programs[!(all_programs$is_active %in% TRUE), ]
+      active_id <- tryCatch(active_program$id, error = \(e) NULL)
+      past <- if (!is.null(all_programs) && nrow(all_programs) > 0 && !is.null(active_id))
+        all_programs[!(all_programs$id %in% active_id), ]
+      else if (!is.null(all_programs) && nrow(all_programs) > 0)
+        all_programs[!(as.logical(all_programs$is_active) %in% TRUE), ]
       else NULL
 
       if (!is.null(past) && nrow(past) > 0) {
