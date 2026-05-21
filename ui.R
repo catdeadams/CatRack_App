@@ -152,12 +152,97 @@ ui <- page_fluid(
     tags$link(rel = "icon", type = "image/svg+xml", href = "icons/icon.svg"),
 
     tags$script(HTML("
+      // ── Service worker ──────────────────────────────────────
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', function() {
           navigator.serviceWorker.register('sw.js').catch(function() {});
         });
       }
+
+      // ── PWA install banner ──────────────────────────────────
+      var _pwaPrompt = null;
+
+      function _showPwaBanner(mode) {
+        if (localStorage.getItem('catrack_pwa_dismissed') === '1') return;
+        if (window.matchMedia('(display-mode: standalone)').matches) return;
+        var b = document.getElementById('pwa-banner');
+        if (!b) return;
+        if (mode === 'ios') {
+          document.getElementById('pwa-ios-tip').style.display  = 'block';
+          document.getElementById('pwa-add-btn').style.display  = 'none';
+        }
+        b.style.display = 'flex';
+      }
+
+      // Android / Chrome: capture the browser prompt event
+      window.addEventListener('beforeinstallprompt', function(e) {
+        e.preventDefault();
+        _pwaPrompt = e;
+        _showPwaBanner('android');
+      });
+
+      // iOS detection (Safari, not already installed)
+      var _isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      var _isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+      if (_isIos && _isSafari) {
+        window.addEventListener('load', function() {
+          setTimeout(function() { _showPwaBanner('ios'); }, 2000);
+        });
+      }
+
+      function _pwaAdd() {
+        if (_pwaPrompt) {
+          _pwaPrompt.prompt();
+          _pwaPrompt.userChoice.then(function() { _pwaDismiss(); });
+        }
+      }
+
+      function _pwaDismiss() {
+        localStorage.setItem('catrack_pwa_dismissed', '1');
+        var b = document.getElementById('pwa-banner');
+        if (b) b.style.display = 'none';
+      }
     "))
+  ),
+  # ── PWA install banner (shown by JS above) ─────────────────
+  tags$div(
+    id = "pwa-banner",
+    style = paste0(
+      "display:none; position:fixed; bottom:0; left:50%; transform:translateX(-50%);",
+      "width:100%; max-width:480px; background:#161616; border-top:1px solid #1D9E75;",
+      "padding:12px 16px; z-index:9999; align-items:center; gap:10px;",
+      "box-shadow:0 -4px 20px rgba(0,0,0,0.6);"
+    ),
+    tags$div(
+      style = "flex:1; min-width:0;",
+      tags$div(
+        style = "font-size:13px; font-weight:700; color:#f0f0f0; margin-bottom:2px;",
+        "Add CatRack to Home Screen"
+      ),
+      tags$div(
+        id = "pwa-ios-tip",
+        style = "display:none; font-size:11px; color:#888; line-height:1.4;",
+        "Tap the Share button below, then \"Add to Home Screen\""
+      )
+    ),
+    tags$button(
+      id = "pwa-add-btn",
+      "Add",
+      style = paste0(
+        "background:#1D9E75; color:#fff; border:none; border-radius:8px;",
+        "padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer;",
+        "flex-shrink:0; white-space:nowrap;"
+      ),
+      onclick = "_pwaAdd()"
+    ),
+    tags$button(
+      "✕",
+      style = paste0(
+        "background:none; color:#555; border:none; font-size:16px;",
+        "cursor:pointer; padding:4px 8px; flex-shrink:0;"
+      ),
+      onclick = "_pwaDismiss()"
+    )
   ),
   div(class = "ct-app",
       uiOutput("main_ui")
