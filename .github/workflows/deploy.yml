@@ -1,0 +1,41 @@
+name: Deploy to Posit Connect
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.4.0'
+
+      - name: Install rsconnect
+        run: Rscript -e "install.packages('rsconnect')"
+
+      - name: Deploy
+        env:
+          POSIT_API_KEY: ${{ secrets.POSIT_API_KEY }}
+        run: |
+          Rscript -e "
+            rsconnect::addServer(
+              url  = 'https://connect.posit.cloud',
+              name = 'connect.posit.cloud'
+            )
+            rsconnect::connectApiUser(
+              account = 'cat-adams',
+              server  = 'connect.posit.cloud',
+              apiKey  = Sys.getenv('POSIT_API_KEY')
+            )
+            rsconnect::deployApp(
+              appDir      = '.',
+              appName     = 'CatRack',
+              account     = 'cat-adams',
+              server      = 'connect.posit.cloud',
+              forceUpdate = TRUE
+            )
+          "

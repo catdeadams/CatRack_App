@@ -50,8 +50,7 @@ docs/
 # translation temp files
 po/*~
 
-# RStudio Connect folder
-rsconnect/
+# RStudio Connect folder — .dcf has no secrets, track it so CI knows the content ID
 .positai
 
 # Claude Code local files (worktrees, memory, settings)
