@@ -274,10 +274,13 @@ programs_page_ui <- function(active_program, all_programs,
       )
     },
 
-    # Past programs
-    if (!is.null(all_programs) && nrow(all_programs) > 1) {
-      past <- all_programs[!isTRUE(all_programs$is_active), ]
-      if (nrow(past) > 0) {
+    # Past programs — any program that is not the current active one
+    {
+      past <- if (!is.null(all_programs) && nrow(all_programs) > 0)
+        all_programs[!(all_programs$is_active %in% TRUE), ]
+      else NULL
+
+      if (!is.null(past) && nrow(past) > 0) {
         tagList(
           div(class = "ct-section-title", style = "margin-top:16px;", "PAST PROGRAMS"),
           lapply(seq_len(nrow(past)), function(i)
@@ -471,40 +474,47 @@ setup_program_server <- function(input, output, session, rv) {
   observeEvent(input$reactivate_program, {
     req(rv$token, rv$user_id)
     pid <- input$reactivate_program
+    if (is.null(pid) || nchar(pid) == 0) return()
 
-    # Deactivate current active program
-    if (!is.null(rv$program)) {
+    # Deactivate all currently active programs for this user
+    tryCatch(
       sb_update("programs",
         sprintf("?user_id=eq.%s&is_active=eq.true", rv$user_id),
-        list(is_active = FALSE, completed_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ")),
-        token = rv$token)
-    }
+        list(is_active = FALSE),
+        token = rv$token),
+      error = \(e) NULL)
 
-    # Activate selected program
+    # Activate the selected program (scoped to user for RLS safety)
     resp <- sb_update("programs",
-      sprintf("?id=eq.%s", pid),
-      list(is_active = TRUE, completed_at = NULL),
+      sprintf("?id=eq.%s&user_id=eq.%s", pid, rv$user_id),
+      list(is_active = TRUE),
       token = rv$token)
 
     if (resp$status_code %in% c(200, 201, 204)) {
-      # Reload active program
-      prog <- sb_select("programs",
-        sprintf("?id=eq.%s", pid), token = rv$token)
-      if (!is.null(prog)) rv$program <- prog[1, ]
+      prog <- tryCatch(
+        sb_select("programs", sprintf("?id=eq.%s&user_id=eq.%s", pid, rv$user_id),
+                  token = rv$token),
+        error = \(e) NULL)
+      if (!is.null(prog) && nrow(prog) > 0) rv$program <- prog[1, ]
 
-      workouts <- sb_select("workouts",
-        sprintf("?program_id=eq.%s&order=week_number,session_number", pid),
-        token = rv$token)
+      workouts <- tryCatch(
+        sb_select("workouts",
+          sprintf("?program_id=eq.%s&order=week_number,session_number", pid),
+          token = rv$token),
+        error = \(e) NULL)
       rv$workouts <- workouts
 
-      rv$all_programs <- tryCatch(
+      refreshed <- tryCatch(
         fetch_all_programs(rv$user_id, rv$token), error = \(e) NULL)
+      if (!is.null(refreshed)) rv$all_programs <- refreshed
 
       rv$page    <- "dashboard"
       rv$nav_tab <- "dashboard"
       showNotification("Program re-activated!", type = "message", duration = 3)
     } else {
-      showNotification("Error re-activating program.", type = "error")
+      showNotification(
+        paste0("Error re-activating program (HTTP ", resp$status_code, ")."),
+        type = "error")
     }
   })
 
