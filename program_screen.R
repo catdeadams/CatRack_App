@@ -443,8 +443,9 @@ setup_program_server <- function(input, output, session, rv) {
       if (resp$status_code %in% c(200, 201, 204)) {
         was_active <- !is.null(rv$program) && rv$program$id == pid
 
-        rv$all_programs <- tryCatch(
+        refreshed <- tryCatch(
           fetch_all_programs(rv$user_id, rv$token), error = \(e) NULL)
+        if (!is.null(refreshed)) rv$all_programs <- refreshed
 
         if (was_active) {
           rv$program  <- NULL

@@ -193,10 +193,16 @@ fetch_exercise_gif <- function(exercise_name, api_key) {
     list(url = NULL, error = paste0("no_match(", substr(body_str, 1, 80), ")"))
   }
 
-  # Only 2 attempts max to conserve the free-tier daily quota (50 req/day):
-  # full name first, then fall back to last word only.
-  words   <- strsplit(trimws(exercise_name), "\\s+")[[1]]
-  queries <- unique(c(exercise_name, tail(words, 1)))
+  # Up to 3 attempts, ordered to conserve the free-tier quota (50 req/day):
+  #  1. full name as-is        ("Barbell Back Squat")
+  #  2. strip equipment prefix  ("Back Squat")
+  #  3. last word only          ("Squat")
+  words    <- strsplit(trimws(exercise_name), "\\s+")[[1]]
+  equip_rx <- "^(barbell|dumbbell|dumbell|cable|machine|ez.?bar|kettlebell|resistance band|smith)\\s+"
+  no_equip <- trimws(sub(equip_rx, "", exercise_name, ignore.case = TRUE))
+  queries  <- unique(c(exercise_name,
+                       if (no_equip != exercise_name) no_equip,
+                       tail(words, 1)))
 
   last_err <- "no_match"
   for (q in queries) {
@@ -649,11 +655,14 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                       def_reps <- if (is_logged) log_entry$reps_completed
                         else if (!is.null(last)) last$reps_completed
                         else we$rep_range_low
-                      def_rpe  <- if (is_logged) log_entry$rpe_actual
-                        else if (s > 1 && length(we_logs) >= s - 1) we_logs[[s-1]]$rpe_actual
-                        else if (!is.null(last) && !is.na(last$rpe_actual))
-                          as.integer(round(last$rpe_actual))
-                        else NA
+                      def_rpe  <- tryCatch({
+                        raw <- if (is_logged) log_entry$rpe_actual
+                          else if (s > 1 && length(we_logs) >= s - 1) we_logs[[s-1]]$rpe_actual
+                          else if (!is.null(last) && !is.na(last$rpe_actual)) last$rpe_actual
+                          else NA
+                        if (!is.null(raw) && length(raw) > 0 && !is.na(raw))
+                          as.integer(round(as.numeric(raw))) else NA
+                      }, error = \(e) NA)
 
                       input_bg  <- if (is_logged) "#071a10" else if (is_drop) "#1a1200" else "#0d0d0d"
                       input_bdr <- if (is_logged) "#0F6E56" else if (is_drop) "#FF9800" else "#1e1e1e"
@@ -992,7 +1001,7 @@ swap_modal_ui <- function(we_id, exercise_id, suggestions) {
               tags$button(
                 "Cancel",
                 style = paste0(
-                  "width:100%; background:none; color:#555; border:none;",
+                  "width:100%; background:none; color:#ccc; border:1px solid #333;",
                   "border-radius:10px; padding:10px; font-size:13px; cursor:pointer;"),
                 onclick = "Shiny.setInputValue('cancel_swap', 1, {priority:'event'})")
             )

@@ -319,7 +319,15 @@ server <- function(input, output, session) {
             equipment_available = I(rv$ob_equipment)
           )
           sb_upsert("user_profiles", profile_data, token = rv$token)
-          
+
+          # Deactivate any existing active programs before creating new one
+          tryCatch(
+            sb_update("programs",
+              sprintf("?user_id=eq.%s&is_active=eq.true", rv$user_id),
+              list(is_active = FALSE),
+              token = rv$token),
+            error = \(e) NULL)
+
           # 2. Generate program (uses service key for bulk writes)
           setProgress(0.4, detail = "Selecting exercises...")
           program_id <- generate_program(
