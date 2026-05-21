@@ -1,0 +1,5 @@
+.Renviron
+.claude
+rsconnect
+*.Rproj
+seed_database.R
