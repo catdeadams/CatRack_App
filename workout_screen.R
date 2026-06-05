@@ -95,31 +95,6 @@ make_session_timer_js <- function(workout_id) {
 ", workout_id)
 }
 
-# ── SWIPE LEFT TO GO BACK ─────────────────────────────────────
-# Detects a leftward swipe (dx < -80px, dy < 60px) and fires
-# the close_workout input — same as tapping the ← button.
-# Only fires on the workout screen (checks for session-elapsed element).
-swipe_back_js <- "
-(function() {
-  if (window._catrackSwipeInit) return;
-  window._catrackSwipeInit = true;
-  var startX, startY;
-  document.addEventListener('touchstart', function(e) {
-    startX = e.touches[0].clientX;
-    startY = e.touches[0].clientY;
-  }, {passive: true});
-  document.addEventListener('touchend', function(e) {
-    if (startX === undefined) return;
-    var dx = e.changedTouches[0].clientX - startX;
-    var dy = e.changedTouches[0].clientY - startY;
-    startX = undefined;
-    // Only handle rightward-to-left swipes starting from the left edge (back gesture)
-    if (dx < -80 && Math.abs(dy) < 70 && document.getElementById('session-elapsed')) {
-      Shiny.setInputValue('close_workout', Math.random(), {priority: 'event'});
-    }
-  }, {passive: true});
-})();
-"
 
 # ── FETCH WORKOUT DATA ───────────────────────────────────────
 fetch_workout_data <- function(workout_id, user_id, token) {
@@ -342,8 +317,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
     tags$head(
       tags$script(HTML(rest_timer_js)),
       tags$script(HTML(make_session_timer_js(
-        tryCatch(as.character(wo$id[1]), error = \(e) "unknown")))),
-      tags$script(HTML(swipe_back_js))
+        tryCatch(as.character(wo$id[1]), error = \(e) "unknown"))))
     ),
 
     # ── Top nav row ───────────────────────────────────────────
