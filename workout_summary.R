@@ -82,26 +82,48 @@ workout_summary_ui <- function(summary_data, program = NULL) {
         else "—"
       }, error = \(e) "—")
 
-      div(style = paste0(
-            "display:flex; justify-content:space-between; align-items:center;",
-            "padding:10px 0; border-bottom:1px solid #1a1a1a;"),
-          div(
-            div(style = "font-size:13px; color:#f0f0f0; font-weight:600; margin-bottom:2px;",
-                ex_name),
-            div(style = "font-size:11px; color:#555;",
-                paste0(n_done, " / ", we$prescribed_sets, " sets",
-                       if (nchar(best_set) > 0 && best_set != "—")
-                         paste0("  ·  best: ", best_set) else ""))
-          ),
-          div(style = "text-align:right; flex-shrink:0; margin-left:12px;",
-              if (ex_vol > 0) {
-                div(style = "font-size:13px; font-weight:700; color:#1D9E75;",
-                    paste0(format(round(ex_vol), big.mark = ","), " lbs"))
-              } else {
-                div(style = "font-size:12px; color:#333;", "—")
-              }
-          )
-      )
+      {
+        # Collect non-empty notes from all logged sets for this exercise
+        notes_list <- tryCatch(
+          Filter(function(n) nchar(trimws(n)) > 0,
+                 sapply(we_logs, function(l) {
+                   n <- as.character(l$notes %||% "")
+                   if (n %in% c("", "NA", "{}", "[]", "null")) "" else n
+                 }, USE.NAMES = FALSE)),
+          error = \(e) character(0))
+
+        div(style = paste0(
+              "padding:10px 0; border-bottom:1px solid #1a1a1a;"),
+            div(style = "display:flex; justify-content:space-between; align-items:center;",
+                div(
+                  div(style = "font-size:13px; color:#f0f0f0; font-weight:600; margin-bottom:2px;",
+                      ex_name),
+                  div(style = "font-size:11px; color:#555;",
+                      paste0(n_done, " / ", we$prescribed_sets, " sets",
+                             if (nchar(best_set) > 0 && best_set != "—")
+                               paste0("  ·  best: ", best_set) else ""))
+                ),
+                div(style = "text-align:right; flex-shrink:0; margin-left:12px;",
+                    if (ex_vol > 0) {
+                      div(style = "font-size:13px; font-weight:700; color:#1D9E75;",
+                          paste0(format(round(ex_vol), big.mark = ","), " lbs"))
+                    } else {
+                      div(style = "font-size:12px; color:#333;", "—")
+                    }
+                )
+            ),
+            # Show any set notes beneath the exercise row
+            if (length(notes_list) > 0)
+              div(style = "margin-top:5px;",
+                  lapply(seq_along(notes_list), function(ni)
+                    div(style = paste0(
+                          "font-size:11px; color:#777; font-style:italic;",
+                          "padding:2px 0 2px 6px; border-left:2px solid #1D9E7540;"),
+                        if (length(notes_list) > 1) paste0("Set ", ni, ": ", notes_list[[ni]])
+                        else notes_list[[ni]])
+                  ))
+        )
+      }
     })
   } else list()
 

@@ -65,23 +65,59 @@ function stopTimer() {
 "
 
 # ── SESSION ELAPSED TIMER JS ─────────────────────────────────
-# Uses window globals so the timer survives Shiny re-renders.
-session_timer_js <- "
+# Persists start time in localStorage keyed by workout ID so the
+# timer survives both Shiny re-renders AND full session reconnects.
+make_session_timer_js <- function(workout_id) {
+  sprintf("
 (function() {
-  if (!window.catrackWsStart) window.catrackWsStart = Date.now();
+  var storageKey = 'catrack_ws_start_%s';
+  var stored = localStorage.getItem(storageKey);
+  var now = Date.now();
+  // Resume if stored start is < 6 hours old (same session)
+  if (stored && (now - parseInt(stored, 10)) < 6 * 3600 * 1000) {
+    window.catrackWsStart = parseInt(stored, 10);
+  } else {
+    window.catrackWsStart = now;
+    localStorage.setItem(storageKey, String(now));
+  }
   if (window.catrackElapsedInterval) clearInterval(window.catrackElapsedInterval);
-
   function updateElapsed() {
     var el = document.getElementById('session-elapsed');
     if (!el) return;
     var elapsed = Math.floor((Date.now() - window.catrackWsStart) / 1000);
     var m = Math.floor(elapsed / 60);
-    var s = elapsed % 60;
+    var s = elapsed %% 60;
     el.innerText = m + ':' + (s < 10 ? '0' : '') + s;
   }
-
   window.catrackElapsedInterval = setInterval(updateElapsed, 1000);
   updateElapsed();
+})();
+", workout_id)
+}
+
+# ── SWIPE LEFT TO GO BACK ─────────────────────────────────────
+# Detects a leftward swipe (dx < -80px, dy < 60px) and fires
+# the close_workout input — same as tapping the ← button.
+# Only fires on the workout screen (checks for session-elapsed element).
+swipe_back_js <- "
+(function() {
+  if (window._catrackSwipeInit) return;
+  window._catrackSwipeInit = true;
+  var startX, startY;
+  document.addEventListener('touchstart', function(e) {
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+  }, {passive: true});
+  document.addEventListener('touchend', function(e) {
+    if (startX === undefined) return;
+    var dx = e.changedTouches[0].clientX - startX;
+    var dy = e.changedTouches[0].clientY - startY;
+    startX = undefined;
+    // Only handle rightward-to-left swipes starting from the left edge (back gesture)
+    if (dx < -80 && Math.abs(dy) < 70 && document.getElementById('session-elapsed')) {
+      Shiny.setInputValue('close_workout', Math.random(), {priority: 'event'});
+    }
+  }, {passive: true});
 })();
 "
 
@@ -137,7 +173,7 @@ fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) 
     sb_select("workout_set_logs",
               sprintf(paste0("?user_id=eq.%s&is_warmup=eq.false",
                              "&workout_exercise_id=in.%s",
-                             "&select=weight_lbs,reps_completed,rpe_actual,logged_at",
+                             "&select=weight_lbs,reps_completed,rpe_actual,notes,logged_at",
                              "&order=logged_at.desc&limit=60"),
                       user_id, id_list),
               token = token),
@@ -151,9 +187,36 @@ fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) 
   do.call(rbind, lapply(dates, function(d) {
     day  <- logs[logs$date == d, ]
     best <- day[which.max(replace(day$wt, is.na(day$wt), -Inf)), ]
+    note_val <- tryCatch({
+      n <- as.character(best$notes %||% "")
+      if (n %in% c("", "NA", "{}", "[]", "null")) NA_character_ else n
+    }, error = \(e) NA_character_)
     data.frame(date   = d, wt = best$wt, reps = best$reps,
-               rpe    = best$rpe, n_sets = nrow(day), stringsAsFactors = FALSE)
+               rpe    = best$rpe, n_sets = nrow(day),
+               note   = note_val, stringsAsFactors = FALSE)
   }))
+}
+
+# ── LAST PERFORMANCE (multi-row for rep-matched pre-fill) ────
+# Returns up to 15 recent working set logs so the renderer can
+# pick the most recent one whose reps match the current target.
+fetch_last_performance <- function(exercise_id, user_id, token) {
+  we_ids <- tryCatch(
+    sb_select("workout_exercises",
+              sprintf("?exercise_id=eq.%s&select=id", exercise_id),
+              token = token),
+    error = \(e) NULL)
+  if (is.null(we_ids) || nrow(we_ids) == 0) return(NULL)
+  id_list <- paste0("(", paste(we_ids$id, collapse = ","), ")")
+  tryCatch(
+    sb_select("workout_set_logs",
+              sprintf(paste0("?user_id=eq.%s&is_warmup=eq.false",
+                             "&workout_exercise_id=in.%s",
+                             "&select=weight_lbs,reps_completed,rpe_actual,logged_at",
+                             "&order=logged_at.desc&limit=15"),
+                      user_id, id_list),
+              token = token),
+    error = \(e) NULL)
 }
 
 # ── EXERCISEDB GIF HELPERS ───────────────────────────────────
@@ -278,7 +341,9 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
   tagList(
     tags$head(
       tags$script(HTML(rest_timer_js)),
-      tags$script(HTML(session_timer_js))
+      tags$script(HTML(make_session_timer_js(
+        tryCatch(as.character(wo$id[1]), error = \(e) "unknown")))),
+      tags$script(HTML(swipe_back_js))
     ),
 
     # ── Top nav row ───────────────────────────────────────────
@@ -477,7 +542,24 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                 if (!is.na(g) && nchar(g) > 0) g else NULL
               }, error = \(e) NULL)
 
-            last     <- last_perf_map[[we$exercise_id]]
+            # Rep-matched last performance: find the most recent log whose
+            # reps fall within this exercise's target range. Falls back to
+            # the most recent log if no rep-matched entry exists.
+            last <- tryCatch({
+              df <- last_perf_map[[we$exercise_id]]
+              if (is.null(df) || nrow(df) == 0) {
+                NULL
+              } else {
+                rep_lo <- tryCatch(as.integer(we$rep_range_low),  error = \(e) NA_integer_)
+                rep_hi <- tryCatch(as.integer(we$rep_range_high), error = \(e) NA_integer_)
+                if (!is.na(rep_lo) && !is.na(rep_hi)) {
+                  matched <- df[!is.na(df$reps_completed) &
+                                df$reps_completed >= rep_lo &
+                                df$reps_completed <= (rep_hi + 2L), ]
+                  if (nrow(matched) > 0) matched[1, ] else df[1, ]
+                } else df[1, ]
+              }
+            }, error = \(e) NULL)
             we_logs  <- set_logs_rv[[we$id]] %||% list()
             n_logged <- length(we_logs)
             is_complete <- n_logged >= we$prescribed_sets
@@ -762,7 +844,8 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                       )
                     }),
 
-                    # Notes textarea
+                    # Notes textarea with localStorage persistence
+                    # (survives Shiny reconnects; key is unique per workout_exercise)
                     div(style = "margin-top:8px;",
                         tags$textarea(
                           id          = paste0("note_", we$id),
@@ -774,7 +857,22 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                             "resize:none; min-height:32px; font-family:inherit;",
                             "line-height:1.4;"),
                           ex_last_note
-                        )
+                        ),
+                        tags$script(HTML(sprintf("
+(function() {
+  var key = 'catrack_note_%s';
+  var ta  = document.getElementById('note_%s');
+  if (!ta) return;
+  // Restore from localStorage only when textarea is empty (no DB-loaded note)
+  if (ta.value === '') {
+    var saved = localStorage.getItem(key);
+    if (saved) ta.value = saved;
+  }
+  ta.addEventListener('input', function() {
+    localStorage.setItem(key, ta.value);
+  });
+})();
+", we$id, we$id)))
                     )
                   ),  # end set grid
 
@@ -783,25 +881,31 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                     hist <- history_map[[we$exercise_id]]
                     if (!is.null(hist) && is.data.frame(hist) && nrow(hist) > 0) {
                       div(style = "margin-top:8px;",
-                          tags$details(
+                          # open = TRUE renders <details open> so history shows immediately
+                          tags$details(open = TRUE,
                             tags$summary(
                               style = paste0(
                                 "font-size:11px; color:#888; cursor:pointer; padding:3px 0;",
                                 "list-style:none; -webkit-user-select:none; user-select:none;"),
                               "History"),
-                            div(style = "margin-top:6px; display:flex; flex-direction:column; gap:3px;",
+                            div(style = "margin-top:6px; display:flex; flex-direction:column; gap:4px;",
                                 lapply(seq_len(nrow(hist)), function(h) {
                                   r <- hist[h, ]
+                                  has_note <- !is.na(r$note) && nchar(r$note) > 0
                                   div(style = paste0(
-                                        "display:flex; justify-content:space-between;",
-                                        "padding:4px 7px; background:#0d0d0d; border-radius:5px;",
+                                        "padding:5px 7px; background:#0d0d0d; border-radius:5px;",
                                         "font-size:11px;"),
-                                      span(style = "color:#777;", format(r$date, "%b %d")),
-                                      span(style = "color:#aaa;",
-                                           paste0(if (!is.na(r$wt)) paste0(r$wt, " lbs") else "BW",
-                                                  " × ", r$reps, " reps",
-                                                  if (!is.na(r$rpe)) paste0("  RPE ", r$rpe) else "",
-                                                  if (r$n_sets > 1) paste0("  (", r$n_sets, " sets)") else "")))
+                                      div(style = "display:flex; justify-content:space-between;",
+                                          span(style = "color:#777;", format(r$date, "%b %d")),
+                                          span(style = "color:#aaa;",
+                                               paste0(if (!is.na(r$wt)) paste0(r$wt, " lbs") else "BW",
+                                                      " × ", r$reps, " reps",
+                                                      if (!is.na(r$rpe)) paste0("  RPE ", r$rpe) else "",
+                                                      if (r$n_sets > 1) paste0("  (", r$n_sets, " sets)") else ""))),
+                                      if (has_note)
+                                        div(style = "font-size:10px; color:#666; font-style:italic; margin-top:2px;",
+                                            r$note)
+                                  )
                                 })
                             )
                           )
@@ -1045,7 +1149,9 @@ setup_workout_server <- function(input, output, session, rv) {
             last <- tryCatch(
               fetch_last_performance(eid, rv$user_id, rv$token),
               error = \(e) NULL)
-            if (!is.null(last)) rv$last_perf_map[[eid]] <- last[1, ]
+            # Store full data frame (multi-row) so the renderer can
+            # filter by matching rep range for a more accurate pre-fill.
+            if (!is.null(last) && nrow(last) > 0) rv$last_perf_map[[eid]] <- last
           }
         }
       }
