@@ -21,13 +21,11 @@ library(plotly)
 #   SUPABASE_ANON_KEY
 #   SUPABASE_SERVICE_KEY
 #   ANTHROPIC_API_KEY
-#   EXERCISEDB_API_KEY   (RapidAPI key for ExerciseDB — optional, enables GIF demos)
 
 SUPABASE_URL         <- Sys.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY    <- Sys.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY")
 ANTHROPIC_API_KEY    <- Sys.getenv("ANTHROPIC_API_KEY")
-EXERCISEDB_API_KEY   <- Sys.getenv("EXERCISEDB_API_KEY")
 
 # Warn loudly at startup if any required key is missing
 missing_keys <- c("SUPABASE_URL","SUPABASE_ANON_KEY","SUPABASE_SERVICE_KEY")[
@@ -46,7 +44,7 @@ if (length(missing_keys) > 0)
   a
 }
 
-for (f in c("program_generation.R", "workout_screen.R", "progress_screen.R",
+for (f in c("methodology.R", "program_generation.R", "workout_screen.R", "progress_screen.R",
             "program_screen.R", "profile_screen.R", "workout_summary.R")) {
   tryCatch(
     source(f),
@@ -169,11 +167,6 @@ GOALS <- list(
     desc  = "Get stronger. Heavy loads, 3–6 reps, focused on big lifts.",
     icon  = "▲"
   ),
-  fat_loss = list(
-    label = "Fat Loss",
-    desc  = "Lean out while preserving muscle. Moderate loads, shorter rest.",
-    icon  = "◇"
-  ),
   pull_up = list(
     label = "Pull-up Focus",
     desc  = "Build pulling strength. Upper back emphasis, weighted progressions.",
@@ -197,6 +190,7 @@ EQUIPMENT_CATEGORIES <- list(
     dumbbells      = "Dumbbells",
     ez_bar         = "EZ Bar",
     trap_bar       = "Trap Bar",
+    kettlebell     = "Kettlebell",
     squat_rack     = "Squat Rack / Power Rack",
     bench          = "Adjustable Bench",
     pullup_bar     = "Pull-up Bar",
@@ -244,6 +238,14 @@ SPLIT_OPTIONS <- c(
 )
 
 FREQUENCY_OPTIONS <- c("2x per week" = 2, "3x per week" = 3)
+
+# Session length budget. Picked at program creation; locked for the 12 weeks.
+# Generator fills slots until the budget is met, then trims accessories.
+SESSION_LENGTH_OPTIONS <- c(
+  "30 min — quick" = 30,
+  "45 min — standard" = 45,
+  "60 min — long"     = 60
+)
 
 DIFFICULTY_OPTIONS <- c(
   "Beginner — new to lifting or returning after a long break" = "beginner",
@@ -458,11 +460,39 @@ onboarding_page_ui <- function(step, values = list()) {
                                                 intermediate="🔥 Intermediate", advanced="⚡ Advanced")),
                                      div(class = "ct-sess-date", style = "margin-top:4px;", label))
                                })
-                           )
+                           ),
+                           # ── Conditional: pull-up baseline (only for pull_up goal) ──
+                           if (isTRUE(values$goal == "pull_up")) {
+                             pu_baseline <- as.integer(values$pullup_baseline %||% 0L)
+                             pu_buckets <- list(
+                               list(val = 0L, label = "Zero",     sub = "Can't do one yet"),
+                               list(val = 1L, label = "1",        sub = "Working on it"),
+                               list(val = 3L, label = "2–3",      sub = "Getting there"),
+                               list(val = 6L, label = "4–7",      sub = "Solid"),
+                               list(val = 10L, label = "8+",      sub = "Advanced")
+                             )
+                             tagList(
+                               div(class = "ct-section-title", style = "margin-top:18px;",
+                                   "How many strict pull-ups can you do?"),
+                               div(style = "font-size:11px; color:#555; margin-bottom:8px;",
+                                   "Block A will start with band-assisted or eccentric work if you're under 3."),
+                               div(style = "display:grid; grid-template-columns:1fr 1fr; gap:6px;",
+                                   lapply(pu_buckets, function(b) {
+                                     is_sel <- isTRUE(pu_baseline == b$val)
+                                     div(class = paste("ct-goal-card", if (is_sel) "selected"),
+                                         style = "padding:10px 8px;",
+                                         onclick = sprintf(
+                                           "Shiny.setInputValue('select_pullup_baseline',%d,{priority:'event'})", b$val),
+                                         div(class = "ct-goal-label", b$label),
+                                         div(class = "ct-goal-desc",  b$sub))
+                                   })
+                               )
+                             )
+                           }
                          ),
                          "3" = tagList(
                            div(class = "ct-step-title", "How often and how?"),
-                           div(class = "ct-step-sub", "Choose your weekly lifting frequency and session structure."),
+                           div(class = "ct-step-sub", "Choose your weekly frequency, session length, and split."),
                            div(class = "ct-section-title", "Sessions per week"),
                            div(style = "display:flex; gap:8px; margin-bottom:16px;",
                                lapply(names(FREQUENCY_OPTIONS), function(label) {
@@ -474,6 +504,20 @@ onboarding_page_ui <- function(step, values = list()) {
                                        "Shiny.setInputValue('select_frequency',%d,{priority:'event'})", val),
                                      div(class = "ct-sess-type", style = "font-size:22px;", val),
                                      div(class = "ct-sess-date", "days/week"))
+                               })
+                           ),
+                           div(class = "ct-section-title", "Session length"),
+                           div(style = "display:flex; gap:8px; margin-bottom:16px;",
+                               lapply(names(SESSION_LENGTH_OPTIONS), function(label) {
+                                 val    <- as.integer(SESSION_LENGTH_OPTIONS[[label]])
+                                 is_sel <- isTRUE(as.integer(values$session_length_minutes %||% 45L) == val)
+                                 sub    <- strsplit(label, " — ")[[1]][2]
+                                 div(class = paste("ct-session-card", if (is_sel) "today" else "future"),
+                                     style = "cursor:pointer; text-align:center; padding:14px;",
+                                     onclick = sprintf(
+                                       "Shiny.setInputValue('select_session_length',%d,{priority:'event'})", val),
+                                     div(class = "ct-sess-type", style = "font-size:18px;", paste0(val, " min")),
+                                     div(class = "ct-sess-date", sub %||% ""))
                                })
                            ),
                            div(class = "ct-section-title", "Split style"),
@@ -535,6 +579,9 @@ onboarding_page_ui <- function(step, values = list()) {
                                            tools::toTitleCase(values$difficulty %||% "intermediate"))),
                                    div(div(class="ct-sess-label","FREQUENCY"),
                                        div(class="ct-sess-type", paste0(values$sessions_per_week %||% 3,"x / week"))),
+                                   div(div(class="ct-sess-label","SESSION LENGTH"),
+                                       div(class="ct-sess-type",
+                                           paste0(values$session_length_minutes %||% 45L, " min"))),
                                    div(div(class="ct-sess-label","SPLIT"),
                                        div(class="ct-sess-type",
                                            names(SPLIT_OPTIONS)[
@@ -542,10 +589,16 @@ onboarding_page_ui <- function(step, values = list()) {
                                    div(div(class="ct-sess-label","EQUIPMENT"),
                                        div(class="ct-sess-type",
                                            paste0(length(values$equipment %||% character(0)), " items"))),
+                                   if (isTRUE(values$goal == "pull_up"))
+                                     div(div(class="ct-sess-label","PULL-UP BASELINE"),
+                                         div(class="ct-sess-type",
+                                             paste0(as.integer(values$pullup_baseline %||% 0L), " strict"))),
                                    div(div(class="ct-sess-label","BLOCK"),
                                        div(class="ct-sess-type","12 weeks · Block 1"))
                                )
                            ),
+                           div(style = "text-align:center; margin-top:10px;",
+                               methodology_info_link("How is this built? →")),
                            uiOutput("onboard_generate_msg")
                          )
   )
@@ -596,7 +649,9 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
               paste("Block", program$block_number, "·",
                     tools::toTitleCase(program$goal), "·",
                     tools::toTitleCase(program$difficulty))),
-          div(class = "ct-block-title", program$name)
+          div(style = "display:flex; align-items:center; gap:8px;",
+              div(class = "ct-block-title", program$name),
+              methodology_info_btn("sm"))
         ),
         div(style = "text-align:right; font-size:12px; color:#888;",
             div(style="font-size:20px; font-weight:700; color:#1D9E75;", paste0(pct, "%")),
@@ -638,7 +693,7 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
                   
                   div(class = card_class,
                       onclick = if (!is_done) sprintf(
-                        "Shiny.setInputValue('open_workout','%s',{priority:'event'})",
+                        "Shiny.setInputValue('open_preview','%s',{priority:'event'})",
                         wo$id) else NULL,
                       div(style="display:flex;justify-content:space-between;align-items:flex-start;",
                           div(div(class="ct-sess-label", paste0("DAY ", wo$session_number)),

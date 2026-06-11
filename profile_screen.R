@@ -34,8 +34,10 @@ calculate_streak <- function(workouts, program) {
             nchar(as.character(week_wos$completed_at)) > 5)
       else 0L
 
+      # is_skipped is a vector; isTRUE() collapses vectors to FALSE so
+      # the prior sum() returned at most 1. Use element-wise check.
       skipped <- if (nrow(week_wos) > 0 && "is_skipped" %in% names(week_wos))
-        sum(isTRUE(week_wos$is_skipped))
+        sum(week_wos$is_skipped %in% TRUE)
       else 0L
 
       # Week is "complete" if you hit your target (skips count against you)
@@ -338,6 +340,9 @@ profile_page_ui <- function(profile, user_email, program,
                  padding:16px; margin-bottom:10px;",
       div(class = "ct-section-title", "ACCOUNT"),
       div(style = "display:flex; flex-direction:column; gap:8px;",
+        tags$button("Programming Method",
+          class = "ct-btn-secondary",
+          onclick = "Shiny.setInputValue('open_methodology', Math.random(), {priority:'event'})"),
         tags$button("View Programs",
           class = "ct-btn-secondary",
           onclick = "Shiny.setInputValue('nav_tab','programs',{priority:'event'})"),
@@ -434,6 +439,14 @@ setup_profile_server <- function(input, output, session, rv) {
     new_equip <- rv$ob_equipment %||%
                  tryCatch(rv$profile$equipment_available[[1]], error=\(e) character(0))
 
+    # Match onboarding's floor — a profile save that clears equipment
+    # would generate a near-empty program on regen.
+    if (length(new_equip) == 0) {
+      showNotification("Please select at least one piece of equipment before saving.",
+                       type = "warning", duration = 4)
+      return()
+    }
+
     # Detect what changed
     goal_changed  <- !isTRUE(new_goal  == rv$profile$goal)
     diff_changed  <- !isTRUE(new_diff  == rv$profile$difficulty)
@@ -478,12 +491,20 @@ setup_profile_server <- function(input, output, session, rv) {
 
           # Generate new program from current week
           setProgress(0.65, detail="Building new program...")
+          # Carry forward session length from the existing program and
+          # pull-up baseline from the user profile (both optional).
+          existing_len <- tryCatch(
+            as.integer(rv$program$session_length_minutes %||% 45L), error = \(e) 45L)
+          existing_pu <- tryCatch(
+            as.integer(rv$profile$pullup_baseline %||% 0L), error = \(e) 0L)
           new_prog_id <- generate_program(
             user_id           = rv$user_id,
             goal              = new_goal,
             difficulty        = new_diff,
             sessions_per_week = as.integer(new_spw),
             split_style       = new_split,
+            session_length_minutes = existing_len,
+            pullup_baseline   = existing_pu,
             equipment         = new_equip,
             block_number      = as.integer(rv$program$block_number %||% 1L),
             start_date        = Sys.Date()

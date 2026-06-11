@@ -1,23 +1,29 @@
 # ============================================================
-# program_generation.R
-# CaTrack — 12-week program generation engine
-# Session 2 of 7
+# program_generation.R — CaTrack  (v2 — Nippard framework)
 #
-# Run this from RStudio to generate a full 12-week block
-# for a user and write it to Supabase.
+# Rewrite (2026-06): volume targets driven by methodology.R,
+# scored exercise selection (no more alphabetical pick),
+# goal-aware session templates, time-budget enforcement,
+# pull-up baseline branching for assisted/eccentric beginners.
 #
-# Usage:
-#   source("program_generation.R")
-#   generate_program(user_id = "your-user-uuid-here")
+# Constants used:
+#   VOLUME_TARGETS_HYPERTROPHY_INTERMEDIATE  (methodology.R)
+#   GOAL_VOLUME_MULTIPLIERS                  (methodology.R)
+#   EXPERIENCE_MAV_POSITION                  (methodology.R)
+#   BLOCK_PROFILES                           (methodology.R)
+#   WEEK_IN_BLOCK_PROFILES                   (methodology.R)
+#   SLOT_TIME_COST                           (methodology.R)
 # ============================================================
 
 library(httr2)
 library(jsonlite)
 library(dplyr)
 
-# ── CREDENTIALS ─────────────────────────────────────────────
-SUPABASE_URL         <- Sys.getenv("SUPABASE_URL",         "https://fowpjdsixqhgaqgdeiph.supabase.co")
-SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY", "YOUR_SERVICE_ROLE_KEY_HERE")
+# ── CREDENTIALS (standalone use only) ────────────────────────
+SUPABASE_URL         <- Sys.getenv("SUPABASE_URL",
+                                   "https://fowpjdsixqhgaqgdeiph.supabase.co")
+SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY",
+                                   "YOUR_SERVICE_ROLE_KEY_HERE")
 
 # ── SUPABASE HELPERS ─────────────────────────────────────────
 sb_post <- function(table, data, upsert = FALSE) {
@@ -45,10 +51,7 @@ sb_get <- function(table, params = "") {
     req_error(is_error = \(r) FALSE) |>
     req_perform()
   if (resp$status_code == 200) fromJSON(resp_body_string(resp), simplifyDataFrame = TRUE)
-  else {
-    cat("sb_get error:", resp_body_string(resp), "\n")
-    NULL
-  }
+  else { cat("sb_get error:", resp_body_string(resp), "\n"); NULL }
 }
 
 sb_patch <- function(table, params, data) {
@@ -65,7 +68,6 @@ sb_patch <- function(table, params, data) {
     req_perform()
 }
 
-# Post one row and return its ID
 sb_insert_one <- function(table, row) {
   resp <- sb_post(table, list(row))
   if (resp$status_code %in% c(200, 201)) {
@@ -78,631 +80,796 @@ sb_insert_one <- function(table, row) {
 }
 
 # ============================================================
-# 1. GOAL PARAMETERS
-#    Maps goal + difficulty to rep ranges, RPE, volume targets
+# 1. RESOLVE WEEKLY VOLUME TARGET PER MUSCLE
 # ============================================================
-get_goal_params <- function(goal, difficulty) {
-  # Base parameters by goal (following Nippard MEV/MRV framework)
-  # Rep ranges follow standard progressive overload logic:
-  # When you hit the TOP of the range consistently for all sets, add weight.
-  # Compound: 8-12, Isolation: 12-15, Heavy: 5-8, Strength: 3-5 / 5-8
-  base <- switch(goal,
-                 hypertrophy = list(
-                   rep_low = 8L, rep_high = 12L, rpe_target = 8.0,
-                   iso_rep_low = 12L, iso_rep_high = 15L,
-                   compound_sets = 3L, isolation_sets = 2L,
-                   weekly_sets = list(
-                     quads = 10L, hamstrings = 9L, glutes = 9L,
-                     chest = 8L, lats = 10L, mid_back = 6L,
-                     front_delts = 4L, mid_delts = 6L, rear_delts = 4L,
-                     biceps = 6L, triceps = 6L, calves = 6L, core = 4L
-                   )
-                 ),
-                 strength = list(
-                   rep_low = 3L, rep_high = 5L, rpe_target = 8.5,
-                   iso_rep_low = 8L, iso_rep_high = 12L,
-                   compound_sets = 4L, isolation_sets = 2L,
-                   weekly_sets = list(
-                     quads = 8L, hamstrings = 8L, glutes = 6L,
-                     chest = 6L, lats = 8L, mid_back = 6L,
-                     front_delts = 4L, mid_delts = 4L, rear_delts = 4L,
-                     biceps = 4L, triceps = 4L, calves = 4L, core = 4L
-                   )
-                 ),
-                 fat_loss = list(
-                   rep_low = 10L, rep_high = 15L, rpe_target = 8.0,
-                   iso_rep_low = 15L, iso_rep_high = 20L,
-                   compound_sets = 3L, isolation_sets = 2L,
-                   weekly_sets = list(
-                     quads = 9L, hamstrings = 8L, glutes = 8L,
-                     chest = 6L, lats = 9L, mid_back = 6L,
-                     front_delts = 4L, mid_delts = 6L, rear_delts = 4L,
-                     biceps = 6L, triceps = 6L, calves = 6L, core = 6L
-                   )
-                 ),
-                 pull_up = list(
-                   rep_low = 5L, rep_high = 8L, rpe_target = 8.5,
-                   iso_rep_low = 8L, iso_rep_high = 12L,
-                   compound_sets = 4L, isolation_sets = 2L,
-                   weekly_sets = list(
-                     quads = 6L, hamstrings = 6L, glutes = 6L,
-                     chest = 6L, lats = 14L, mid_back = 10L,
-                     front_delts = 4L, mid_delts = 4L, rear_delts = 6L,
-                     biceps = 8L, triceps = 4L, calves = 4L, core = 6L
-                   )
-                 ),
-                 running_support = list(
-                   rep_low = 8L, rep_high = 12L, rpe_target = 8.0,
-                   iso_rep_low = 12L, iso_rep_high = 15L,
-                   compound_sets = 3L, isolation_sets = 2L,
-                   weekly_sets = list(
-                     quads = 10L, hamstrings = 10L, glutes = 12L,
-                     chest = 4L, lats = 6L, mid_back = 4L,
-                     front_delts = 2L, mid_delts = 4L, rear_delts = 4L,
-                     biceps = 4L, triceps = 4L, calves = 8L, core = 8L
-                   )
-                 ),
-                 functional = list(
-                   rep_low = 8L, rep_high = 12L, rpe_target = 8.0,
-                   iso_rep_low = 12L, iso_rep_high = 15L,
-                   compound_sets = 3L, isolation_sets = 2L,
-                   weekly_sets = list(
-                     quads = 8L, hamstrings = 8L, glutes = 9L,
-                     chest = 6L, lats = 8L, mid_back = 6L,
-                     front_delts = 4L, mid_delts = 6L, rear_delts = 4L,
-                     biceps = 4L, triceps = 4L, calves = 6L, core = 8L
-                   )
-                 ),
-                 # Default fallback
-                 list(
-                   rep_low = 8L, rep_high = 12L, rpe_target = 8.0,
-                   iso_rep_low = 12L, iso_rep_high = 15L,
-                   compound_sets = 3L, isolation_sets = 2L,
-                   weekly_sets = list(
-                     quads = 9L, hamstrings = 8L, glutes = 9L,
-                     chest = 7L, lats = 9L, mid_back = 6L,
-                     front_delts = 4L, mid_delts = 6L, rear_delts = 4L,
-                     biceps = 6L, triceps = 6L, calves = 6L, core = 4L
-                   )
-                 )
-  )
-  
-  # Difficulty modifiers
-  diff_mod <- switch(difficulty,
-                     beginner     = list(set_mult = 0.75, rpe_mod = -0.5, heavy_sets = 1L),
-                     intermediate = list(set_mult = 1.0,  rpe_mod = 0.0,  heavy_sets = 1L),
-                     advanced     = list(set_mult = 1.25, rpe_mod = 0.5,  heavy_sets = 2L),
-                     list(set_mult = 1.0, rpe_mod = 0.0, heavy_sets = 1L)
-  )
-  
-  c(base, diff_mod)
+# target = base MAV in [low, high] interpolated by experience,
+#          × goal multiplier × block multiplier × week-in-block multiplier.
+# Floored at MV (unless goal multiplier is 0), capped at MRV.
+resolve_weekly_target <- function(goal, difficulty, block_variant,
+                                  week_in_block, muscle) {
+  base <- VOLUME_TARGETS_HYPERTROPHY_INTERMEDIATE[[muscle]]
+  if (is.null(base)) return(0L)
+
+  goal_mult  <- GOAL_VOLUME_MULTIPLIERS[[goal]][[muscle]] %||% 1.0
+  if (goal_mult <= 0) return(0L)
+
+  exp_pos    <- EXPERIENCE_MAV_POSITION[[difficulty]] %||% 0.5
+  mav_target <- base$MAV_low + exp_pos * (base$MAV_high - base$MAV_low)
+
+  block_mult <- BLOCK_PROFILES[[block_variant]]$volume_mult        %||% 1.0
+  week_mult  <- WEEK_IN_BLOCK_PROFILES[[as.character(week_in_block)]]$volume_mult %||% 1.0
+
+  target <- mav_target * goal_mult * block_mult * week_mult
+
+  if (target < base$MV)  target <- base$MV
+  if (target > base$MRV) target <- base$MRV
+  as.integer(round(target))
+}
+
+# Convenience: all 13 muscles → weekly target for a given block+week
+weekly_targets_for_week <- function(goal, difficulty, block_variant, week_in_block) {
+  muscles <- names(VOLUME_TARGETS_HYPERTROPHY_INTERMEDIATE)
+  setNames(
+    vapply(muscles, function(m)
+      resolve_weekly_target(goal, difficulty, block_variant, week_in_block, m),
+      integer(1)),
+    muscles)
 }
 
 # ============================================================
-# 2. WEEK PROGRESSION PARAMETERS
-#    4-week micro-cycle: Base → Build → Peak → Deload
+# 2. RIR / RPE RESOLUTION
 # ============================================================
-get_week_params <- function(week_in_block) {
-  # week_in_block is 1-4 (position within a 4-week cycle)
-  switch(as.character(week_in_block),
-         "1" = list(  # Base week: establish working weights
-           rpe_mod       = -1.0,   # RPE target -1 (lighter, groove the pattern)
-           volume_mod    = 0.80,   # 80% of prescribed sets
-           rep_mod       = 0L,     # at low end of rep range
-           label         = "Base"
-         ),
-         "2" = list(  # Build week: push to middle of rep range
-           rpe_mod       = 0.0,
-           volume_mod    = 1.0,
-           rep_mod       = 0L,
-           label         = "Build"
-         ),
-         "3" = list(  # Peak week: push to top of rep range, heavier
-           rpe_mod       = 0.5,
-           volume_mod    = 1.0,
-           rep_mod       = 0L,
-           label         = "Peak"
-         ),
-         "4" = list(  # Deload: same exercises, 60% volume, RPE -2
-           rpe_mod       = -2.0,
-           volume_mod    = 0.60,
-           rep_mod       = 0L,
-           label         = "Deload"
-         )
+resolve_rir <- function(block_variant, week_in_block) {
+  base_rir <- BLOCK_PROFILES[[block_variant]]$rir_target %||% 2.0
+  week_mod <- WEEK_IN_BLOCK_PROFILES[[as.character(week_in_block)]]$rir_mod %||% 0.0
+  max(0, min(5, base_rir + week_mod))
+}
+
+rir_to_rpe <- function(rir) max(5, min(10, 10 - rir))
+
+# ============================================================
+# 3. SESSION FOCUS (which muscles to bias per session in the week)
+# ============================================================
+# For each (split, sessions_per_week, goal) returns an ordered list
+# of sessions. Each session has:
+#   label  — display name on calendar
+#   focus  — vector of muscle names to bias exercise selection toward
+#   slots  — function(goal, block, week_in_block, baseline) -> slot list
+# The slot list captures the *ideal* full session before time-budget trim.
+
+# Helper: slot constructors (closures over goal/block/week)
+.make_slot <- function(role, movement_patterns, categories = NULL,
+                       label, sets, reps_low, reps_high, rest_s,
+                       superset_group = NA, prefer_compound = NULL,
+                       is_drop_set = FALSE, reuse_heavy = FALSE) {
+  list(
+    role             = role,           # "heavy" | "compound" | "isolation" | "superset"
+    label            = label,
+    movement_patterns = movement_patterns,
+    categories       = categories,
+    sets             = as.integer(sets),
+    rep_range_low    = as.integer(reps_low),
+    rep_range_high   = as.integer(reps_high),
+    rest_seconds     = as.integer(rest_s),
+    prefer_compound  = if (is.null(prefer_compound))
+                         role %in% c("heavy","compound") else prefer_compound,
+    superset_group   = superset_group,
+    set_type         = if (is_drop_set) "drop_set" else "working",
+    reuse_heavy      = reuse_heavy
   )
 }
 
+# Heavy main lift: rep ranges shift by goal
+.heavy_slot <- function(patterns, label, goal, sets = 3L) {
+  rl <- if (goal == "strength")  3L else 5L
+  rh <- if (goal == "strength")  5L else 8L
+  .make_slot("heavy", patterns, NULL, label, sets, rl, rh, 180L)
+}
+
+# Back-off using the heavy compound exercise
+.backoff_slot <- function(patterns, label, goal) {
+  rl <- if (goal == "strength")  5L else 8L
+  rh <- if (goal == "strength")  8L else 12L
+  .make_slot("compound", patterns, NULL, label, 2L, rl, rh, 150L,
+             reuse_heavy = TRUE)
+}
+
+# Generic working compound
+.compound_slot <- function(patterns, label, goal, categories = NULL, sets = 3L) {
+  rl <- switch(goal, strength = 5L, pull_up = 6L, 8L)
+  rh <- switch(goal, strength = 8L, pull_up = 10L, 12L)
+  .make_slot("compound", patterns, categories, label, sets, rl, rh, 150L)
+}
+
+# Isolation / accessory
+.iso_slot <- function(patterns, label, categories = NULL, sets = 2L,
+                      reps_low = 10L, reps_high = 15L, rest_s = 90L,
+                      superset_group = NA, is_drop = FALSE) {
+  .make_slot("isolation", patterns, categories, label, sets, reps_low,
+             reps_high, rest_s, superset_group = superset_group,
+             prefer_compound = FALSE, is_drop_set = is_drop)
+}
+
 # ============================================================
-# 3. EXERCISE SELECTION
-#    Fetches exercises from Supabase filtered by equipment
+# 3a. SESSION TEMPLATES BY GOAL × SPLIT × SESSION INDEX
+# ============================================================
+build_ideal_session <- function(goal, split_style, sessions_per_week,
+                                session_idx, block_variant, week_in_block,
+                                pullup_baseline = 0L) {
+
+  # Pull-up baseline branching: for pull_up goal users < 3 strict reps,
+  # substitute assisted/eccentric in block A.
+  pull_pattern <- if (goal == "pull_up" && pullup_baseline < 3L &&
+                     block_variant == "A")
+                    c("vertical_pull")  # exercise scorer will pick lat pulldown
+                  else c("vertical_pull")
+
+  key <- paste(split_style, sessions_per_week, session_idx, sep = "_")
+
+  # ── HYPERTROPHY ──────────────────────────────────────────
+  if (goal == "hypertrophy") {
+    return(switch(key,
+      "full_body_3_1" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .backoff_slot(c("squat"), "Squat Back-off", goal),
+        .compound_slot(c("horizontal_pull"), "Horizontal Row", goal),
+        .compound_slot(c("horizontal_push"), "Horizontal Press", goal),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"), is_drop = TRUE),
+        .iso_slot(c("shoulder_abduction"), "Lateral Raise", c("lateral_raise"))
+      ),
+      "full_body_3_2" = list(
+        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .compound_slot(c("incline_push"), "Incline Press", goal),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"), superset_group = "A"),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"), superset_group = "A"),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"))
+      ),
+      "full_body_3_3" = list(
+        .compound_slot(c("squat","lunge"), "Single Leg / Squat Variation", goal,
+                       categories = c("single_leg","squat")),
+        .compound_slot(c("vertical_push"), "Shoulder Press", goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .iso_slot(c("chest_fly"), "Chest Fly", c("chest_fly"), is_drop = TRUE),
+        .iso_slot(c("knee_extension"), "Leg Extension", c("leg_extension")),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
+        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"),
+                  superset_group = "B")
+      ),
+      "full_body_2_1" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .backoff_slot(c("squat"), "Squat Back-off", goal),
+        .compound_slot(c("hinge"), "Hinge", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"), is_drop = TRUE),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt")),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
+        .iso_slot(c("spinal_flexion"), "Core", c("core"), superset_group = "B")
+      ),
+      "full_body_2_2" = list(
+        .heavy_slot(c("horizontal_push"), "Heavy Press", goal),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .compound_slot(c("incline_push"), "Incline Press", goal),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"), superset_group = "A"),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"), superset_group = "A"),
+        .iso_slot(c("shoulder_abduction"), "Lateral Raise", c("lateral_raise"))
+      ),
+      "push_pull_legs_3_1" = list(  # PUSH
+        .heavy_slot(c("horizontal_push"), "Heavy Bench Press", goal),
+        .compound_slot(c("incline_push"), "Incline Press", goal),
+        .compound_slot(c("vertical_push"), "Overhead Press", goal),
+        .iso_slot(c("chest_fly"), "Chest Fly", c("chest_fly")),
+        .iso_slot(c("shoulder_abduction"), "Lateral Raise", c("lateral_raise"),
+                  superset_group = "A"),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"), superset_group = "A")
+      ),
+      "push_pull_legs_3_2" = list(  # PULL
+        .heavy_slot(pull_pattern, "Heavy Vertical Pull", goal),
+        .compound_slot(c("horizontal_pull"), "Horizontal Row", goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"), superset_group = "A"),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"),
+                  superset_group = "A"),
+        .iso_slot(c("shoulder_abduction"), "Lateral Raise", c("lateral_raise"))
+      ),
+      "push_pull_legs_3_3" = list(  # LEGS
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .backoff_slot(c("squat"), "Squat Back-off", goal),
+        .compound_slot(c("hinge"), "Hinge", goal),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"), is_drop = TRUE),
+        .iso_slot(c("knee_extension"), "Leg Extension", c("leg_extension"),
+                  is_drop = TRUE),
+        .iso_slot(c("hip_extension"), "Glute", c("hip_thrust","glute_accessory")),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
+        .iso_slot(c("spinal_flexion"), "Core", c("core"), superset_group = "B")
+      ),
+      "upper_lower_4_1" = list(  # UPPER A
+        .heavy_slot(c("horizontal_push"), "Heavy Bench Press", goal),
+        .backoff_slot(c("horizontal_push"), "Press Back-off", goal),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"), superset_group = "A"),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"), superset_group = "A"),
+        .iso_slot(c("shoulder_abduction"), "Lateral Raise", c("lateral_raise"))
+      ),
+      "upper_lower_4_2" = list(  # LOWER A
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .backoff_slot(c("squat"), "Squat Back-off", goal),
+        .compound_slot(c("hinge"), "Hinge", goal),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"), is_drop = TRUE),
+        .iso_slot(c("knee_extension"), "Leg Extension", c("leg_extension"),
+                  is_drop = TRUE),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
+        .iso_slot(c("spinal_flexion"), "Core", c("core"), superset_group = "B")
+      ),
+      "upper_lower_4_3" = list(  # UPPER B
+        .compound_slot(c("vertical_push"), "Overhead Press", goal),
+        .compound_slot(c("incline_push"), "Incline Press", goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .iso_slot(c("chest_fly"), "Chest Fly", c("chest_fly")),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"), superset_group = "A"),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"), superset_group = "A"),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"))
+      ),
+      "upper_lower_4_4" = list(  # LOWER B
+        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"), is_drop = TRUE),
+        .iso_slot(c("abduction"), "Glute Accessory", c("glute_accessory")),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
+        .iso_slot(c("spinal_flexion"), "Core", c("core"), superset_group = "B")
+      ),
+      list()
+    ))
+  }
+
+  # ── STRENGTH ─────────────────────────────────────────────
+  if (goal == "strength") {
+    # Bias: more main-lift sets, fewer accessories
+    return(switch(key,
+      "full_body_3_1" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal, sets = 4L),
+        .backoff_slot(c("squat"), "Squat Back-off", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"))
+      ),
+      "full_body_3_2" = list(
+        .heavy_slot(c("horizontal_push"), "Heavy Bench Press", goal, sets = 4L),
+        .backoff_slot(c("horizontal_push"), "Bench Back-off", goal),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"))
+      ),
+      "full_body_3_3" = list(
+        .heavy_slot(c("hinge"), "Heavy Deadlift", goal, sets = 4L),
+        .compound_slot(c("vertical_push"), "Overhead Press", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
+      ),
+      "full_body_2_1" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal, sets = 5L),
+        .heavy_slot(c("horizontal_push"), "Heavy Bench Press", goal, sets = 3L),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"))
+      ),
+      "full_body_2_2" = list(
+        .heavy_slot(c("hinge"), "Heavy Deadlift", goal, sets = 4L),
+        .heavy_slot(c("vertical_push"), "Heavy Overhead Press", goal, sets = 3L),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"))
+      ),
+      "push_pull_legs_3_1" = list(
+        .heavy_slot(c("horizontal_push"), "Heavy Bench Press", goal, sets = 5L),
+        .backoff_slot(c("horizontal_push"), "Bench Back-off", goal),
+        .compound_slot(c("vertical_push"), "Overhead Press", goal),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"))
+      ),
+      "push_pull_legs_3_2" = list(
+        .heavy_slot(pull_pattern, "Weighted Pull-up / Heavy Pulldown", goal, sets = 4L),
+        .compound_slot(c("horizontal_pull"), "Heavy Row", goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"))
+      ),
+      "push_pull_legs_3_3" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal, sets = 5L),
+        .heavy_slot(c("hinge"), "Heavy Deadlift", goal, sets = 3L),
+        .compound_slot(c("squat","lunge"), "Squat/Lunge Accessory", goal),
+        .iso_slot(c("spinal_flexion"), "Core", c("core"))
+      ),
+      "upper_lower_4_1" = list(
+        .heavy_slot(c("horizontal_push"), "Heavy Bench Press", goal, sets = 5L),
+        .backoff_slot(c("horizontal_push"), "Bench Back-off", goal),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"))
+      ),
+      "upper_lower_4_2" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal, sets = 5L),
+        .backoff_slot(c("squat"), "Squat Back-off", goal),
+        .compound_slot(c("hinge"), "Hinge", goal),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"))
+      ),
+      "upper_lower_4_3" = list(
+        .heavy_slot(c("vertical_push"), "Heavy Overhead Press", goal, sets = 5L),
+        .compound_slot(c("incline_push"), "Incline Press", goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"))
+      ),
+      "upper_lower_4_4" = list(
+        .heavy_slot(c("hinge"), "Heavy Deadlift", goal, sets = 5L),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"))
+      ),
+      list()
+    ))
+  }
+
+  # ── PULL-UP FOCUS ────────────────────────────────────────
+  if (goal == "pull_up") {
+    # Pulling emphasis across every session; minimal lower body
+    return(switch(key,
+      "full_body_3_1" = list(
+        .heavy_slot(pull_pattern, "Heavy Vertical Pull", goal),
+        .backoff_slot(pull_pattern, "Vertical Pull Back-off", goal),
+        .compound_slot(c("horizontal_pull"), "Horizontal Row", goal),
+        .iso_slot(c("elbow_flexion"), "Bicep — wide grip", c("biceps")),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"))
+      ),
+      "full_body_3_2" = list(
+        .heavy_slot(c("horizontal_pull"), "Heavy Row", goal),
+        .compound_slot(pull_pattern, "Vertical Pull Variation", goal),
+        .compound_slot(c("horizontal_push"), "Chest Press (Maintenance)", goal, sets = 2L),
+        .iso_slot(c("elbow_flexion"), "Bicep — chin grip", c("biceps")),
+        .iso_slot(c("spinal_flexion"), "Core", c("core"))
+      ),
+      "full_body_3_3" = list(
+        .heavy_slot(pull_pattern, "Heavy Vertical Pull", goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"), superset_group = "A"),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"), superset_group = "A"),
+        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
+      ),
+      "full_body_2_1" = list(
+        .heavy_slot(pull_pattern, "Heavy Vertical Pull", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .compound_slot(c("horizontal_push"), "Chest Press (Maintenance)", goal, sets = 2L),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps")),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"))
+      ),
+      "full_body_2_2" = list(
+        .heavy_slot(c("horizontal_pull"), "Heavy Row", goal),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"), superset_group = "A"),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"), superset_group = "A"),
+        .iso_slot(c("spinal_flexion"), "Core", c("core"))
+      ),
+      "push_pull_legs_3_1" = list(  # Push (light/maint for pull-up goal)
+        .compound_slot(c("horizontal_push"), "Chest Press", goal, sets = 2L),
+        .compound_slot(c("vertical_push"), "Overhead Press", goal, sets = 2L),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt")),
+        .iso_slot(c("shoulder_abduction"), "Lateral Raise", c("lateral_raise"))
+      ),
+      "push_pull_legs_3_2" = list(  # Pull — the main day
+        .heavy_slot(pull_pattern, "Heavy Vertical Pull", goal),
+        .backoff_slot(pull_pattern, "Vertical Pull Back-off", goal),
+        .compound_slot(c("horizontal_pull"), "Heavy Row", goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .iso_slot(c("elbow_flexion"), "Bicep — wide", c("biceps"), superset_group = "A"),
+        .iso_slot(c("elbow_flexion"), "Bicep — chin", c("biceps"), superset_group = "A")
+      ),
+      "push_pull_legs_3_3" = list(  # Legs (minimal)
+        .compound_slot(c("squat"), "Squat", goal, sets = 2L),
+        .compound_slot(c("hinge"), "Hinge", goal, sets = 2L),
+        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
+      ),
+      list()
+    ))
+  }
+
+  # ── RUNNING SUPPORT ──────────────────────────────────────
+  if (goal == "running_support") {
+    return(switch(key,
+      "full_body_3_1" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl")),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
+        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"), superset_group = "B")
+      ),
+      "full_body_3_2" = list(
+        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
+        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"), is_drop = TRUE),
+        .iso_slot(c("plantarflexion"), "Calves — seated (soleus)", c("calves")),
+        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core", c("core"))
+      ),
+      "full_body_3_3" = list(
+        .compound_slot(c("squat","lunge"), "Single Leg Squat", goal, categories = "single_leg"),
+        .compound_slot(c("hinge"), "Hinge Variation", goal),
+        .compound_slot(c("abduction"), "Hip Abduction", goal, categories = "glute_accessory"),
+        .iso_slot(c("plantarflexion"), "Calves — standing", c("calves"), is_drop = TRUE),
+        .iso_slot(c("spinal_flexion"), "Core", c("core")),
+        .compound_slot(c("horizontal_pull"), "Row (upper maintenance)", goal, sets = 2L)
+      ),
+      "full_body_2_1" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .compound_slot(c("hinge"), "Hinge", goal),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl")),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
+        .iso_slot(c("spinal_flexion"), "Core", c("core"), superset_group = "B")
+      ),
+      "full_body_2_2" = list(
+        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
+        .compound_slot(c("squat","lunge"), "Squat/Lunge", goal, categories = "single_leg"),
+        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
+        .iso_slot(c("plantarflexion"), "Calves — seated", c("calves"), is_drop = TRUE),
+        .iso_slot(c("anti_extension"), "Anti-extension Core", c("core")),
+        .iso_slot(c("abduction"), "Hip Abduction", c("glute_accessory"))
+      ),
+      "upper_lower_4_1" = list(
+        .compound_slot(c("horizontal_push"), "Chest Press (maint)", goal, sets = 2L),
+        .compound_slot(c("horizontal_pull"), "Row", goal, sets = 2L),
+        .compound_slot(c("vertical_push"), "Overhead Press (maint)", goal, sets = 2L),
+        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
+      ),
+      "upper_lower_4_2" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl")),
+        .iso_slot(c("plantarflexion"), "Calves — standing", c("calves"), superset_group = "B"),
+        .iso_slot(c("spinal_flexion"), "Core", c("core"), superset_group = "B")
+      ),
+      "upper_lower_4_3" = list(
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .compound_slot(c("incline_push"), "Incline Push (maint)", goal, sets = 2L),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt")),
+        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core", c("core"))
+      ),
+      "upper_lower_4_4" = list(
+        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
+        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .iso_slot(c("plantarflexion"), "Calves — seated (soleus)", c("calves"), is_drop = TRUE),
+        .iso_slot(c("abduction"), "Hip Abduction", c("glute_accessory"))
+      ),
+      list()
+    ))
+  }
+
+  # ── FUNCTIONAL ───────────────────────────────────────────
+  if (goal == "functional") {
+    return(switch(key,
+      "full_body_3_1" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .compound_slot(c("horizontal_push"), "Push", goal),
+        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core", c("core")),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"))
+      ),
+      "full_body_3_2" = list(
+        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .compound_slot(c("vertical_push"), "Overhead Press", goal),
+        .iso_slot(c("spinal_flexion","rotation"), "Core", c("core"), superset_group = "B"),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B")
+      ),
+      "full_body_3_3" = list(
+        .compound_slot(c("squat","lunge"), "Single Leg Squat", goal, categories = "single_leg"),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .compound_slot(c("incline_push","horizontal_push"), "Push Variation", goal),
+        .compound_slot(c("locomotion"), "Carry / Sled (if available)", goal, sets = 3L),
+        .iso_slot(c("anti_extension"), "Anti-extension Core", c("core"))
+      ),
+      "full_body_2_1" = list(
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core", c("core"), superset_group = "B"),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B")
+      ),
+      "full_body_2_2" = list(
+        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
+        .compound_slot(c("horizontal_push"), "Push", goal),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .compound_slot(c("locomotion"), "Carry / Sled", goal, sets = 2L),
+        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
+      ),
+      list()
+    ))
+  }
+
+  list()
+}
+
+# ============================================================
+# 4. ELIGIBLE EXERCISES (filter by equipment)
 # ============================================================
 get_eligible_exercises <- function(user_equipment) {
-  # Pull full exercise library
   all_ex <- sb_get("exercises", "?select=*&order=category,name")
   if (is.null(all_ex) || nrow(all_ex) == 0) stop("Could not fetch exercise library")
-  
-  # Filter: exercise is eligible if ALL required equipment is in user's list
-  # (bodyweight exercises are always eligible)
-  eligible <- all_ex[sapply(seq_len(nrow(all_ex)), function(i) {
-    required <- all_ex$equipment_required[[i]]
+
+  eligible <- all_ex[vapply(seq_len(nrow(all_ex)), function(i) {
+    required <- tryCatch(all_ex$equipment_required[[i]], error = \(e) character(0))
     if (length(required) == 0 || all(required == "bodyweight")) return(TRUE)
     all(required %in% c(user_equipment, "bodyweight"))
-  }), ]
-  
-  cat(sprintf("  Exercise library: %d total, %d eligible with your equipment\n",
+  }, logical(1)), ]
+
+  cat(sprintf("  Exercise library: %d total, %d eligible\n",
               nrow(all_ex), nrow(eligible)))
   eligible
 }
 
-# Pick best exercise for a slot, excluding already-used ones.
-#
-# Block-variant rotation strategy (mirrors Nippard's approach):
-#   Block A → prefer barbell / free-weight compounds (heaviest progressive overload)
-#   Block B → prefer machine / cable (constant tension, safer fatigue accumulation)
-#   Block C → prefer dumbbell / unilateral / bodyweight (ROM, balance, novelty)
-#
-# This ensures each 4-week block uses meaningfully different exercises rather
-# than the same exercise repeated or a random alphabetical pick.
-pick_exercise <- function(exercises, movement_patterns = NULL, categories = NULL,
-                          exclude_ids = character(0), prefer_compound = TRUE,
-                          goal = "hypertrophy", block_variant = "A") {
-  candidates <- exercises
+# ============================================================
+# 5. EXERCISE SCORING + PICK (replaces alphabetical pick)
+# ============================================================
+# Block equipment preference (broadly aligned with Nippard variety theme).
+BLOCK_EQUIPMENT_PREF <- list(
+  A = c("barbell","squat_rack","ez_bar","trap_bar"),
+  B = c("cable_machine","lat_pulldown_machine","hack_squat_machine",
+        "leg_press_machine","leg_extension_machine",
+        "seated_leg_curl_machine","lying_leg_curl_machine",
+        "chest_press_machine","pec_dec_machine","hip_thrust_machine",
+        "hip_abduction_machine","calf_raise_machine","ab_machine",
+        "incline_press_machine","shoulder_press_machine","row_machine",
+        "lateral_raise_machine"),
+  C = c("dumbbells","bodyweight","resistance_bands","pullup_bar","dip_bars","bench")
+)
 
-  # Filter by movement pattern or category
-  if (!is.null(movement_patterns))
-    candidates <- candidates[candidates$movement_pattern %in% movement_patterns, ]
-  if (!is.null(categories))
-    candidates <- candidates[candidates$category %in% categories, ]
+# Score: higher is better.
+score_exercise <- function(exercise, slot, block_variant, used_ids,
+                           muscle_deficit, goal, pullup_baseline = 0L) {
+  if (exercise$id %in% used_ids) return(-Inf)
 
-  # Exclude already-assigned exercises this session
-  candidates <- candidates[!candidates$id %in% exclude_ids, ]
+  # Determine primary muscles for this exercise
+  prim <- tryCatch(unlist(exercise$primary_muscles), error = \(e) character(0))
+  sec  <- tryCatch(unlist(exercise$secondary_muscles), error = \(e) character(0))
 
-  if (nrow(candidates) == 0) return(NULL)
-
-  # Prefer compound vs isolation based on flag
-  if (prefer_compound && any(candidates$is_compound))
-    candidates <- candidates[candidates$is_compound, ]
-
-  if (nrow(candidates) == 0) return(NULL)
-
-  # ── Block-variant equipment preference ────────────────────────────────
-  # Defines which equipment signals to prefer for each training block
-  block_equip_pref <- list(
-    "A" = c("barbell", "squat_rack", "ez_bar", "trap_bar"),          # free weight
-    "B" = c("cable_machine", "lat_pulldown_machine", "hack_squat_machine",
-            "leg_press_machine", "leg_extension_machine",
-            "lying_leg_curl_machine", "seated_leg_curl_machine",
-            "chest_press_machine", "pec_dec_machine",
-            "hip_thrust_machine", "hip_abduction_machine",
-            "calf_raise_machine", "ab_machine"),                      # machines
-    "C" = c("dumbbells", "bodyweight", "resistance_bands",
-            "pullup_bar", "dip_bars", "bench")                        # dumbbells / BW
-  )
-  pref <- block_equip_pref[[block_variant]] %||% character(0)
-
-  # Try to find a candidate that uses preferred equipment
-  if (length(pref) > 0) {
-    preferred <- candidates[vapply(seq_len(nrow(candidates)), function(i) {
-      eq <- tryCatch(
-        if (is.list(candidates$equipment_required)) candidates$equipment_required[[i]]
-        else strsplit(gsub('[{}"]', '', candidates$equipment_required[i]), ",")[[1]],
-        error = \(e) character(0))
-      any(trimws(eq) %in% pref)
-    }, logical(1)), , drop = FALSE]
-
-    if (nrow(preferred) > 0) candidates <- preferred
+  # Base: 1.0 if compound slot wants compound and this is compound
+  base <- if (slot$prefer_compound) {
+    if (isTRUE(exercise$is_compound)) 1.0 else -0.5
+  } else {
+    if (isTRUE(exercise$is_compound)) 0.2 else 1.0
   }
 
-  # Within the filtered pool, sort by name for determinism then pick first
-  candidates <- candidates[order(candidates$name), , drop = FALSE]
-  candidates[1L, ]
+  # Muscle deficit bonus: how much do the muscles this hits need volume?
+  prim_def <- sum(vapply(prim, \(m) muscle_deficit[[m]] %||% 0, numeric(1)))
+  sec_def  <- sum(vapply(sec,  \(m) muscle_deficit[[m]] %||% 0, numeric(1))) * 0.5
+  muscle_score <- (prim_def + sec_def) / 5.0  # normalize roughly
+
+  # Block equipment preference
+  eq <- tryCatch(unlist(exercise$equipment_required), error = \(e) character(0))
+  pref <- BLOCK_EQUIPMENT_PREF[[block_variant]] %||% character(0)
+  block_score <- if (length(pref) > 0 && any(eq %in% pref)) 0.6 else 0
+
+  # Pull-up baseline override: for vertical_pull slots in Block A when baseline < 3,
+  # prefer lat pulldown / band-assisted variants (downrank "Pull-up" and "Chin-up").
+  baseline_score <- 0
+  if (goal == "pull_up" && block_variant == "A" && pullup_baseline < 3L &&
+      isTRUE(exercise$movement_pattern == "vertical_pull")) {
+    nm <- tolower(as.character(exercise$name %||% ""))
+    if (grepl("pulldown", nm))               baseline_score <- 1.5
+    else if (grepl("pull-?up|chin-?up", nm)) baseline_score <- -1.5
+  }
+
+  base + muscle_score + block_score + baseline_score
+}
+
+pick_exercise_scored <- function(exercises, slot, block_variant, used_ids,
+                                 muscle_deficit, goal, pullup_baseline) {
+  if (is.null(exercises) || nrow(exercises) == 0) return(NULL)
+
+  cands <- exercises
+  if (!is.null(slot$movement_patterns))
+    cands <- cands[cands$movement_pattern %in% slot$movement_patterns, ]
+  if (!is.null(slot$categories))
+    cands <- cands[cands$category %in% slot$categories, ]
+
+  if (nrow(cands) == 0) return(NULL)
+
+  scores <- vapply(seq_len(nrow(cands)), function(i)
+    score_exercise(cands[i, ], slot, block_variant, used_ids,
+                   muscle_deficit, goal, pullup_baseline),
+    numeric(1))
+
+  best_idx <- which.max(scores)
+  if (length(best_idx) == 0 || !is.finite(scores[best_idx])) return(NULL)
+  cands[best_idx, ]
 }
 
 # ============================================================
-# 4. SESSION TEMPLATES
-#    Defines the slot structure for each session type
+# 6. SLOT TIME COST + BUDGET TRIM
 # ============================================================
+slot_time_cost <- function(slot) {
+  cost <- switch(slot$role,
+    heavy      = SLOT_TIME_COST$heavy_compound,
+    compound   = SLOT_TIME_COST$compound,
+    isolation  = SLOT_TIME_COST$isolation,
+    SLOT_TIME_COST$compound)
+  # Supersets are paired — share fixed rest, count as 1.5× a solo
+  if (!is.na(slot$superset_group %||% NA))
+    cost <- cost * 0.75   # each leg of a superset pair is 0.75× → pair = 1.5×
+  cost
+}
 
-# Returns a list of slot definitions for one session
-build_session_slots <- function(session_type, goal, difficulty) {
-  p <- get_goal_params(goal, difficulty)
-  
-  # Heavy compound: 5-8 reps (strength-hypertrophy overlap), 3-5 for strength goal
-  heavy_slot <- function(movement_patterns, categories = NULL, label = "Main Compound") {
-    rep_low  <- if (goal == "strength") 3L else 5L
-    rep_high <- if (goal == "strength") 5L else 8L
-    list(
-      label             = label,
-      movement_patterns = movement_patterns,
-      categories        = categories,
-      prefer_compound   = TRUE,
-      sets              = p$heavy_sets + 1L,
-      rep_range_low     = rep_low,
-      rep_range_high    = rep_high,
-      rpe_target        = p$rpe_target + 0.5,
-      rest_seconds      = 180L,
-      set_type          = "working",
-      warmup_sets       = 2L,
-      is_heavy          = TRUE
-    )
+trim_to_budget <- function(slots, budget_min) {
+  if (length(slots) == 0) return(slots)
+  total <- sum(vapply(slots, slot_time_cost, numeric(1)))
+  while (total > budget_min && length(slots) > 2) {
+    # Drop the last isolation; if no isolations, drop last slot
+    iso_idx <- which(vapply(slots, \(s) s$role == "isolation", logical(1)))
+    drop_idx <- if (length(iso_idx) > 0) tail(iso_idx, 1) else length(slots)
+    slots <- slots[-drop_idx]
+    total <- sum(vapply(slots, slot_time_cost, numeric(1)))
   }
-
-  # Back-off: same movement, 8-12 reps (hypertrophy zone)
-  backoff_slot <- function(movement_patterns, categories = NULL, label = "Back-off") {
-    bo_low  <- if (goal == "strength") 5L else 8L
-    bo_high <- if (goal == "strength") 8L else 12L
-    list(
-      label             = label,
-      movement_patterns = movement_patterns,
-      categories        = categories,
-      prefer_compound   = TRUE,
-      sets              = 2L,
-      rep_range_low     = bo_low,
-      rep_range_high    = bo_high,
-      rpe_target        = p$rpe_target - 0.5,
-      rest_seconds      = 150L,
-      set_type          = "working",
-      warmup_sets       = 0L,
-      is_heavy          = FALSE,
-      reuse_heavy       = TRUE  # pick same exercise as heavy slot
-    )
-  }
-
-  # Working compound: goal's standard rep range (8-12 for hypertrophy)
-  compound_slot <- function(movement_patterns, categories = NULL, label = "Compound") {
-    list(
-      label             = label,
-      movement_patterns = movement_patterns,
-      categories        = categories,
-      prefer_compound   = TRUE,
-      sets              = p$compound_sets,
-      rep_range_low     = p$rep_low,
-      rep_range_high    = p$rep_high,
-      rpe_target        = p$rpe_target,
-      rest_seconds      = 150L,
-      set_type          = "working",
-      warmup_sets       = 1L,
-      is_heavy          = FALSE
-    )
-  }
-
-  # Isolation / accessory: higher rep range (12-15 for hypertrophy)
-  iso_slot <- function(movement_patterns, categories = NULL, label = "Accessory",
-                       drop = FALSE, superset_group = NA_character_) {
-    list(
-      label             = label,
-      movement_patterns = movement_patterns,
-      categories        = categories,
-      prefer_compound   = FALSE,
-      sets              = p$isolation_sets,
-      rep_range_low     = p$iso_rep_low  %||% (p$rep_low + 4L),
-      rep_range_high    = p$iso_rep_high %||% (p$rep_high + 3L),
-      rpe_target        = p$rpe_target + 0.5,
-      rest_seconds      = 90L,
-      set_type          = if (drop) "drop_set" else "working",
-      warmup_sets       = 0L,
-      superset_group    = superset_group,
-      is_heavy          = FALSE
-    )
-  }
-  
-  # ── SESSION TYPE DEFINITIONS ─────────────────────────────
-  switch(session_type,
-         
-         # ── 3x FULL BODY ─────────────────────────────────────────
-         # Session A: Squat-dominant + Horizontal pull + accessories
-         "full_body_A" = list(
-           heavy_slot(c("squat"), label = "Heavy Squat"),
-           backoff_slot(c("squat"), label = "Squat Back-off"),
-           compound_slot(c("horizontal_pull"), label = "Horizontal Pull"),
-           iso_slot(c("knee_flexion"), c("leg_curl"), label = "Leg Curl", drop = TRUE),
-           iso_slot(c("rear_delt_fly","shoulder_abduction"), label = "Rear Delt / Lateral Raise",
-                    drop = TRUE, superset_group = NA_character_),
-           iso_slot(c("horizontal_push","chest_fly"), label = "Chest Accessory")
-         ),
-         
-         # Session B: Press-dominant upper + Vertical pull + accessories
-         "full_body_B" = list(
-           heavy_slot(c("horizontal_push"), label = "Heavy Press"),
-           backoff_slot(c("horizontal_push","incline_push"), label = "Press Back-off"),
-           compound_slot(c("vertical_pull"), label = "Vertical Pull"),
-           compound_slot(c("vertical_push"), label = "Shoulder Press"),
-           iso_slot(c("elbow_extension"), c("triceps"), label = "Tricep",
-                    superset_group = "A"),
-           iso_slot(c("elbow_flexion"), c("biceps"), label = "Bicep",
-                    superset_group = "A")
-         ),
-         
-         # Session C: Hinge-dominant lower + Vertical pull + accessories
-         "full_body_C" = list(
-           heavy_slot(c("hinge"), label = "Heavy Hinge"),
-           backoff_slot(c("hinge","lunge"), label = "Hinge Back-off"),
-           compound_slot(c("squat","lunge"), c("single_leg"), label = "Quad Accessory"),
-           iso_slot(c("knee_extension"), c("leg_extension"), label = "Leg Extension", drop = TRUE),
-           iso_slot(c("plantarflexion"), c("calves"), label = "Calves",
-                    superset_group = "B"),
-           iso_slot(c("spinal_flexion","anti_extension"), c("core"), label = "Core",
-                    superset_group = "B")
-         ),
-         
-         # ── 3x PUSH / PULL / LEGS ────────────────────────────────
-         "push" = list(
-           heavy_slot(c("horizontal_push"), label = "Heavy Horizontal Push"),
-           compound_slot(c("incline_push"), label = "Incline Push"),
-           compound_slot(c("vertical_push"), label = "Overhead Press"),
-           iso_slot(c("elbow_extension"), c("triceps"), label = "Tricep",
-                    superset_group = "A"),
-           iso_slot(c("shoulder_abduction"), c("lateral_raise"), label = "Lateral Raise",
-                    superset_group = "A"),
-           iso_slot(c("chest_fly"), label = "Chest Fly")
-         ),
-         
-         "pull" = list(
-           heavy_slot(c("vertical_pull"), label = "Heavy Vertical Pull"),
-           compound_slot(c("horizontal_pull"), label = "Horizontal Row"),
-           compound_slot(c("horizontal_pull"), label = "Row Variation"),
-           iso_slot(c("elbow_flexion"), c("biceps"), label = "Bicep",
-                    superset_group = "A"),
-           iso_slot(c("rear_delt_fly"), c("rear_delt"), label = "Rear Delt",
-                    superset_group = "A"),
-           iso_slot(c("shoulder_abduction"), c("lateral_raise"), label = "Lateral Raise")
-         ),
-         
-         "legs" = list(
-           heavy_slot(c("squat"), label = "Heavy Squat"),
-           backoff_slot(c("squat"), label = "Squat Back-off"),
-           compound_slot(c("hinge"), label = "Hinge"),
-           iso_slot(c("knee_flexion"), c("leg_curl"), label = "Leg Curl", drop = TRUE),
-           iso_slot(c("knee_extension"), c("leg_extension"), label = "Leg Extension", drop = TRUE),
-           iso_slot(c("hip_extension"), c("hip_thrust","glute_accessory"), label = "Glute"),
-           iso_slot(c("plantarflexion"), c("calves"), label = "Calves",
-                    superset_group = "B"),
-           iso_slot(c("spinal_flexion"), c("core"), label = "Core",
-                    superset_group = "B")
-         ),
-         
-         # ── 2x FULL BODY ─────────────────────────────────────────
-         "fb2_A" = list(  # Lower dominant
-           heavy_slot(c("squat"), label = "Heavy Squat"),
-           backoff_slot(c("squat"), label = "Squat Back-off"),
-           compound_slot(c("hinge"), label = "Hinge"),
-           compound_slot(c("horizontal_pull"), label = "Row"),
-           iso_slot(c("knee_flexion"), c("leg_curl"), label = "Leg Curl", drop = TRUE),
-           # Use rear_delt_fly only (not shoulder_abduction) so no lateral raise / shrug confusion
-           iso_slot(c("rear_delt_fly"), c("rear_delt"), label = "Rear Delt"),
-           iso_slot(c("plantarflexion"), c("calves"), label = "Calves",
-                    superset_group = "B"),
-           iso_slot(c("spinal_flexion"), c("core"), label = "Core",
-                    superset_group = "B")
-         ),
-         
-         "fb2_B" = list(  # Upper dominant
-           heavy_slot(c("horizontal_push"), label = "Heavy Press"),
-           compound_slot(c("vertical_pull"), label = "Vertical Pull"),
-           compound_slot(c("incline_push"), label = "Incline Push"),
-           compound_slot(c("horizontal_pull"), label = "Row"),
-           compound_slot(c("lunge","squat"), c("single_leg"), label = "Single Leg"),
-           iso_slot(c("elbow_extension"), c("triceps"), label = "Tricep",
-                    superset_group = "A"),
-           iso_slot(c("elbow_flexion"), c("biceps"), label = "Bicep",
-                    superset_group = "A")
-         ),
-         
-         # ── 4x UPPER / LOWER ─────────────────────────────────────
-         "upper_A" = list(
-           heavy_slot(c("horizontal_push"), label = "Heavy Press"),
-           backoff_slot(c("horizontal_push"), label = "Press Back-off"),
-           compound_slot(c("vertical_pull"), label = "Vertical Pull"),
-           compound_slot(c("horizontal_pull"), label = "Row"),
-           iso_slot(c("elbow_extension"), c("triceps"), label = "Tricep",
-                    superset_group = "A"),
-           iso_slot(c("elbow_flexion"), c("biceps"), label = "Bicep",
-                    superset_group = "A"),
-           iso_slot(c("shoulder_abduction"), c("lateral_raise"), label = "Lateral Raise")
-         ),
-         
-         "upper_B" = list(
-           compound_slot(c("vertical_push"), label = "Overhead Press"),
-           compound_slot(c("incline_push"), label = "Incline Push"),
-           compound_slot(c("horizontal_pull"), label = "Row Variation"),
-           iso_slot(c("chest_fly"), label = "Chest Fly"),
-           iso_slot(c("elbow_flexion"), c("biceps"), label = "Bicep",
-                    superset_group = "A"),
-           iso_slot(c("elbow_extension"), c("triceps"), label = "Tricep",
-                    superset_group = "A"),
-           iso_slot(c("rear_delt_fly"), c("rear_delt"), label = "Rear Delt")
-         ),
-         
-         "lower_A" = list(
-           heavy_slot(c("squat"), label = "Heavy Squat"),
-           backoff_slot(c("squat"), label = "Squat Back-off"),
-           compound_slot(c("hinge"), label = "Hinge"),
-           iso_slot(c("knee_flexion"), c("leg_curl"), label = "Leg Curl", drop = TRUE),
-           iso_slot(c("knee_extension"), c("leg_extension"), label = "Leg Extension", drop = TRUE),
-           iso_slot(c("plantarflexion"), c("calves"), label = "Calves",
-                    superset_group = "B"),
-           iso_slot(c("spinal_flexion"), c("core"), label = "Core",
-                    superset_group = "B")
-         ),
-         
-         "lower_B" = list(
-           heavy_slot(c("hinge"), label = "Heavy Hinge"),
-           compound_slot(c("lunge","squat"), c("single_leg"), label = "Single Leg"),
-           compound_slot(c("hip_extension"), c("hip_thrust"), label = "Hip Thrust"),
-           iso_slot(c("knee_flexion"), c("leg_curl"), label = "Leg Curl", drop = TRUE),
-           iso_slot(c("abduction"), c("glute_accessory"), label = "Glute Accessory"),
-           iso_slot(c("plantarflexion"), c("calves"), label = "Calves",
-                    superset_group = "B"),
-           iso_slot(c("spinal_flexion"), c("core"), label = "Core",
-                    superset_group = "B")
-         ),
-         
-         # Fallback
-         list()
-  )
+  slots
 }
 
 # ============================================================
-# 5. SPLIT SCHEDULE
-#    Returns ordered list of session types for each split
-# ============================================================
-get_split_schedule <- function(split_style, sessions_per_week, goal) {
-  switch(paste(split_style, sessions_per_week, sep = "_"),
-         
-         # 3x Full Body (default for most goals)
-         "full_body_3" = list(
-           sessions = c("full_body_A", "full_body_B", "full_body_C"),
-           labels   = c("Full Body A", "Full Body B", "Full Body C")
-         ),
-         
-         # 2x Full Body
-         "full_body_2" = list(
-           sessions = c("fb2_A", "fb2_B"),
-           labels   = c("Full Body (Lower Focus)", "Full Body (Upper Focus)")
-         ),
-         
-         # 3x Push/Pull/Legs
-         "push_pull_legs_3" = list(
-           sessions = c("push", "pull", "legs"),
-           labels   = c("Push", "Pull", "Legs")
-         ),
-         
-         # 4x Upper/Lower
-         "upper_lower_4" = list(
-           sessions = c("upper_A", "lower_A", "upper_B", "lower_B"),
-           labels   = c("Upper A", "Lower A", "Upper B", "Lower B")
-         ),
-         
-         # 2x Upper/Lower (alternating)
-         "upper_lower_2" = list(
-           sessions = c("upper_A", "lower_A"),
-           labels   = c("Upper", "Lower")
-         ),
-         
-         # Default: 3x Full Body
-         list(
-           sessions = c("full_body_A", "full_body_B", "full_body_C"),
-           labels   = c("Full Body A", "Full Body B", "Full Body C")
-         )
-  )
-}
-
-# ============================================================
-# 6. INSTANTIATE ONE SESSION
-#    Given a template and exercise pool, return a list of
-#    exercise assignments ready to write to workout_exercises
+# 7. INSTANTIATE A SESSION
+#    Pick exercises for each slot, applying RIR/RPE math
 # ============================================================
 instantiate_session <- function(slots, exercises, goal, difficulty,
-                                week_params, block_variant = "A") {
+                                block_variant, week_in_block,
+                                weekly_targets, sets_already_scheduled,
+                                pullup_baseline = 0L) {
   used_ids    <- character(0)
-  heavy_ex_id <- NULL  # track the heavy compound for back-off reuse
+  heavy_ex_id <- NULL
   result      <- list()
   order_idx   <- 1L
-  
+
+  rir <- resolve_rir(block_variant, week_in_block)
+  rpe <- rir_to_rpe(rir)
+
+  # Build initial deficit map: how short of weekly target are we per muscle?
+  muscle_deficit <- list()
+  for (m in names(weekly_targets)) {
+    muscle_deficit[[m]] <- max(0, weekly_targets[[m]] - (sets_already_scheduled[[m]] %||% 0))
+  }
+
   for (slot in slots) {
-    # Back-off slots reuse the heavy compound exercise
     if (isTRUE(slot$reuse_heavy) && !is.null(heavy_ex_id)) {
       chosen <- exercises[exercises$id == heavy_ex_id, ]
     } else {
-      chosen <- pick_exercise(
-        exercises        = exercises,
-        movement_patterns = slot$movement_patterns,
-        categories       = slot$categories,
-        exclude_ids      = used_ids,
-        prefer_compound  = slot$prefer_compound,
-        goal             = goal,
-        block_variant    = block_variant
-      )
+      chosen <- pick_exercise_scored(exercises, slot, block_variant,
+                                     used_ids, muscle_deficit, goal,
+                                     pullup_baseline)
     }
-    
     if (is.null(chosen) || nrow(chosen) == 0) next
-    
-    # Track heavy compound for back-off
-    if (isTRUE(slot$is_heavy)) heavy_ex_id <- chosen$id
-    
-    # Apply week progression modifiers
-    adj_rpe  <- min(10, max(6, slot$rpe_target + week_params$rpe_mod))
-    adj_sets <- max(1L, round(slot$sets * week_params$volume_mod))
-    
+    if (slot$role == "heavy") heavy_ex_id <- chosen$id
+
+    # Week-in-block volume modifier on sets
+    week_mult <- WEEK_IN_BLOCK_PROFILES[[as.character(week_in_block)]]$volume_mult %||% 1.0
+    adj_sets  <- max(1L, round(slot$sets * week_mult))
+
+    # Update deficit map
+    prim <- tryCatch(unlist(chosen$primary_muscles), error = \(e) character(0))
+    for (m in prim) {
+      muscle_deficit[[m]] <- max(0, (muscle_deficit[[m]] %||% 0) - adj_sets)
+    }
+
+    # Warm-up sets: 2 for heavy, 1 for compound, 0 for isolation
+    warmup_n <- switch(slot$role, heavy = 2L, compound = 1L, 0L)
+
     result[[order_idx]] <- list(
       exercise_id    = chosen$id,
-      exercise_name  = chosen$name,   # for display/debugging
+      exercise_name  = chosen$name,
       slot_label     = slot$label,
       exercise_order = order_idx,
       prescribed_sets = as.integer(adj_sets),
       rep_range_low  = as.integer(slot$rep_range_low),
       rep_range_high = as.integer(slot$rep_range_high),
-      rpe_target     = adj_rpe,
+      rpe_target     = round(rpe, 1),
       rest_seconds   = as.integer(slot$rest_seconds),
       set_type       = slot$set_type,
-      warmup_sets    = as.integer(slot$warmup_sets %||% 0L),
+      warmup_sets    = warmup_n,
       superset_group = slot$superset_group %||% NA_character_
     )
-    
+
     used_ids  <- c(used_ids, chosen$id)
     order_idx <- order_idx + 1L
   }
-  
-  result
+
+  # Return scheduled sets per muscle so caller can carry into next session
+  sets_added <- list()
+  for (ea in result) {
+    ex <- exercises[exercises$id == ea$exercise_id, ]
+    if (nrow(ex) == 0) next
+    prim <- tryCatch(unlist(ex$primary_muscles), error = \(e) character(0))
+    for (m in prim) {
+      sets_added[[m]] <- (sets_added[[m]] %||% 0) + ea$prescribed_sets
+    }
+  }
+
+  list(exercises = result, sets_added = sets_added)
 }
 
-# %||% is defined in global.R — do not redefine here
+# ============================================================
+# 8. SPLIT SCHEDULE (labels + count)
+# ============================================================
+get_split_schedule <- function(split_style, sessions_per_week, goal) {
+  switch(paste(split_style, sessions_per_week, sep = "_"),
+    "full_body_3" = list(
+      labels = c("Full Body A", "Full Body B", "Full Body C"),
+      n_sessions = 3L
+    ),
+    "full_body_2" = list(
+      labels = c("Full Body (Lower Focus)", "Full Body (Upper Focus)"),
+      n_sessions = 2L
+    ),
+    "push_pull_legs_3" = list(
+      labels = c("Push", "Pull", "Legs"),
+      n_sessions = 3L
+    ),
+    "upper_lower_4" = list(
+      labels = c("Upper A", "Lower A", "Upper B", "Lower B"),
+      n_sessions = 4L
+    ),
+    "upper_lower_2" = list(
+      labels = c("Upper", "Lower"),
+      n_sessions = 2L
+    ),
+    # Fallback
+    list(labels = c("Full Body A", "Full Body B", "Full Body C"),
+         n_sessions = 3L)
+  )
+}
 
 # ============================================================
-# 7. MAIN: generate_program
-#    Creates a full 12-week program in Supabase
+# 9. MAIN: generate_program
 # ============================================================
 generate_program <- function(
     user_id,
-    goal             = "hypertrophy",   # hypertrophy | strength | fat_loss |
-    #                                     pull_up | running_support | functional
-    difficulty       = "intermediate",  # beginner | intermediate | advanced
+    goal             = "hypertrophy",   # hypertrophy | strength | pull_up |
+    #                                     running_support | functional
+    difficulty       = "intermediate",
     sessions_per_week = 3L,
-    split_style      = "full_body",     # full_body | push_pull_legs | upper_lower
-    equipment        = NULL,            # vector of equipment IDs; NULL = fetch from profile
+    split_style      = "full_body",
+    session_length_minutes = 45L,
+    pullup_baseline  = 0L,
+    equipment        = NULL,
     block_number     = 1L,
     start_date       = Sys.Date(),
     program_name     = NULL
 ) {
-  cat("\n=== CaTrack Program Generator ===\n")
+  cat("\n=== CaTrack Program Generator (v2 — Nippard framework) ===\n")
   cat(sprintf("User:       %s\n", user_id))
   cat(sprintf("Goal:       %s\n", goal))
   cat(sprintf("Difficulty: %s\n", difficulty))
   cat(sprintf("Frequency:  %dx/week\n", sessions_per_week))
   cat(sprintf("Split:      %s\n", split_style))
-  cat(sprintf("Block:      %d\n", block_number))
+  cat(sprintf("Session:    %d min budget\n", session_length_minutes))
+  if (goal == "pull_up")
+    cat(sprintf("Pull-up baseline: %d strict\n", pullup_baseline))
+  cat(sprintf("Block:      %d (variant %s)\n",
+              block_number, c("A","B","C")[((block_number - 1L) %% 3L) + 1L]))
   cat(sprintf("Start:      %s\n", start_date))
-  cat("=================================\n\n")
-  
-  # ── Get user equipment if not provided ────────────────────
+  cat("==========================================================\n\n")
+
+  # ── Equipment ────────────────────────────────────────────
   if (is.null(equipment)) {
-    profile <- sb_get("user_profiles", paste0("?id=eq.", user_id, "&select=equipment_available"))
+    profile <- sb_get("user_profiles",
+                      paste0("?id=eq.", user_id, "&select=equipment_available"))
     equipment <- if (!is.null(profile) && nrow(profile) > 0)
       profile$equipment_available[[1]]
     else
-      c("dumbbells", "bench", "cable_machine", "lat_pulldown_machine",
-        "leg_press_machine", "pullup_bar", "bodyweight")
-    cat(sprintf("Equipment from profile: %s\n", paste(equipment, collapse = ", ")))
+      c("dumbbells","bench","cable_machine","lat_pulldown_machine",
+        "leg_press_machine","pullup_bar","bodyweight")
   }
-  
-  # ── Get eligible exercises ─────────────────────────────────
+
   exercises <- get_eligible_exercises(equipment)
-  
-  # ── Build schedule ────────────────────────────────────────
-  schedule <- get_split_schedule(split_style, sessions_per_week, goal)
-  n_session_types <- length(schedule$sessions)
-  cat(sprintf("\nSplit: %d session types per week\n", n_session_types))
-  for (i in seq_along(schedule$sessions))
-    cat(sprintf("  Day %d: %s\n", i, schedule$labels[i]))
-  
-  # ── Create program record ─────────────────────────────────
+  schedule  <- get_split_schedule(split_style, sessions_per_week, goal)
+
+  # ── Program record ───────────────────────────────────────
   if (is.null(program_name)) {
-    # Replace underscores with spaces before title-casing
     goal_label  <- tools::toTitleCase(gsub("_", " ", goal))
     split_label <- tools::toTitleCase(gsub("_", " ", split_style))
     program_name <- sprintf("%s %s — Block %d", goal_label, split_label, block_number)
   }
-  
+
   program_row <- list(
     user_id           = user_id,
     name              = program_name,
@@ -710,67 +877,73 @@ generate_program <- function(
     difficulty        = difficulty,
     sessions_per_week = as.integer(sessions_per_week),
     split_style       = split_style,
+    session_length_minutes = as.integer(session_length_minutes),
     equipment_snapshot = I(equipment),
     block_number      = as.integer(block_number),
     total_weeks       = 12L,
     start_date        = as.character(start_date),
     is_active         = TRUE
   )
-  
+
   program_id <- sb_insert_one("programs", program_row)
   if (is.null(program_id)) stop("Failed to create program record")
   cat(sprintf("\nProgram created: %s\n", program_id))
-  
-  # ── Generate 12 weeks ────────────────────────────────────
-  total_sessions <- 0L
-  total_exercises <- 0L
-  
+
+  total_sessions <- 0L; total_exercises <- 0L
+
   for (week in 1:12) {
-    # Determine block variant (A=wk1-4, B=wk5-8, C=wk9-12)
     block_variant <- c("A","B","C")[ceiling(week / 4)]
     week_in_block <- ((week - 1) %% 4) + 1
-    week_params   <- get_week_params(week_in_block)
-    
-    cat(sprintf("\n  Week %02d [Block %s, %s]", week, block_variant, week_params$label))
-    
-    for (sess_idx in seq_along(schedule$sessions)) {
-      session_type  <- schedule$sessions[sess_idx]
+
+    cat(sprintf("\n  Week %02d [Block %s %s]",
+                week, block_variant,
+                BLOCK_PROFILES[[block_variant]]$label))
+
+    # Weekly targets for this week (block × week-in-block modifiers applied)
+    week_targets <- weekly_targets_for_week(goal, difficulty, block_variant, week_in_block)
+    sets_scheduled <- list()  # accumulates as we add sessions
+
+    for (sess_idx in seq_len(schedule$n_sessions)) {
       session_label <- schedule$labels[sess_idx]
-      
-      # Calculate scheduled date (week start + session offset)
-      # Sessions spaced evenly across the week
+
+      # Build ideal slot list, then trim to budget
+      slots <- build_ideal_session(goal, split_style, sessions_per_week,
+                                   sess_idx, block_variant, week_in_block,
+                                   pullup_baseline)
+      slots <- trim_to_budget(slots, session_length_minutes)
+
+      # Scheduled date — sessions spaced evenly across the week
       day_offset <- switch(as.character(sessions_per_week),
-                           "2" = c(0L, 3L),
-                           "3" = c(0L, 2L, 4L),
-                           "4" = c(0L, 1L, 3L, 4L),
-                           c(0L, 2L, 4L)
+        "2" = c(0L, 3L),
+        "3" = c(0L, 2L, 4L),
+        "4" = c(0L, 1L, 3L, 4L),
+        c(0L, 2L, 4L)
       )
       sched_date <- start_date + ((week - 1) * 7L) + day_offset[sess_idx]
-      
-      # Create workout record
+
       workout_row <- list(
-        program_id    = program_id,
-        user_id       = user_id,
-        week_number   = as.integer(week),
+        program_id     = program_id,
+        user_id        = user_id,
+        week_number    = as.integer(week),
         session_number = as.integer(sess_idx),
-        session_label = session_label,
+        session_label  = session_label,
         scheduled_date = as.character(sched_date)
       )
       workout_id <- sb_insert_one("workouts", workout_row)
-      if (is.null(workout_id)) {
-        cat(sprintf("\n    WARN: Failed to create workout w%d-s%d\n", week, sess_idx))
-        next
-      }
-      
-      # Get session slots and instantiate exercises
-      slots  <- build_session_slots(session_type, goal, difficulty)
-      ex_assignments <- instantiate_session(
-        slots, exercises, goal, difficulty, week_params, block_variant
-      )
-      
-      # Write workout_exercises
-      if (length(ex_assignments) > 0) {
-        ex_rows <- lapply(ex_assignments, function(ea) {
+      if (is.null(workout_id)) { cat("\n    WARN: workout insert failed\n"); next }
+
+      sess <- instantiate_session(slots, exercises, goal, difficulty,
+                                  block_variant, week_in_block,
+                                  week_targets, sets_scheduled,
+                                  pullup_baseline)
+
+      # Carry sets forward so later sessions know what's already covered
+      for (m in names(sess$sets_added))
+        sets_scheduled[[m]] <- (sets_scheduled[[m]] %||% 0) + sess$sets_added[[m]]
+
+      # Write workout_exercises rows
+      if (length(sess$exercises) > 0) {
+        ex_rows <- lapply(sess$exercises, function(ea) {
           list(
             workout_id      = workout_id,
             exercise_id     = ea$exercise_id,
@@ -785,61 +958,70 @@ generate_program <- function(
             superset_group  = ea$superset_group
           )
         })
-        
         resp <- sb_post("workout_exercises", ex_rows)
         if (resp$status_code %in% c(200, 201)) {
-          total_exercises <- total_exercises + length(ex_assignments)
+          total_exercises <- total_exercises + length(sess$exercises)
         } else {
-          cat(sprintf("\n    WARN: Exercise insert failed: %s\n", resp_body_string(resp)))
+          cat(sprintf("\n    WARN: exercise insert failed: %s\n",
+                      resp_body_string(resp)))
         }
       }
-      
+
       total_sessions <- total_sessions + 1L
       cat(".")
     }
+
+    # Volume coverage report at week's end (just to console for now)
+    if (week_in_block == 2) {
+      cat(sprintf("\n      Week %d volume coverage:", week))
+      for (m in names(week_targets)) {
+        if (week_targets[[m]] == 0) next
+        got <- sets_scheduled[[m]] %||% 0
+        marker <- if (got >= week_targets[[m]]) "✓" else
+                  if (got >= week_targets[[m]] * 0.7) "~" else "!"
+        cat(sprintf(" %s%s %d/%d", marker, m, got, week_targets[[m]]))
+      }
+    }
   }
-  
-  cat(sprintf("\n\nDone!\n"))
+
+  cat("\n\nDone!\n")
   cat(sprintf("  Program ID:  %s\n", program_id))
   cat(sprintf("  Sessions:    %d\n", total_sessions))
   cat(sprintf("  Exercises:   %d prescriptions written\n", total_exercises))
-  
-  # ── Preview week 1 ────────────────────────────────────────
+
   cat("\n── Week 1 Preview ──────────────────────────────────\n")
-  preview_program(program_id)
-  
+  preview_program(program_id, week = 1)
+
   invisible(program_id)
 }
 
 # ============================================================
-# 8. PREVIEW: print a week of the generated program
+# 10. PREVIEW: print a week of the generated program
 # ============================================================
 preview_program <- function(program_id, week = 1) {
   workouts <- sb_get("workouts",
-                     sprintf("?program_id=eq.%s&week_number=eq.%d&order=session_number", program_id, week))
+    sprintf("?program_id=eq.%s&week_number=eq.%d&order=session_number",
+            program_id, week))
   if (is.null(workouts) || nrow(workouts) == 0) {
     cat("No workouts found for this week.\n"); return(invisible(NULL))
   }
-  
+
   for (i in seq_len(nrow(workouts))) {
     wo <- workouts[i, ]
     cat(sprintf("\n  %s (%s)\n", wo$session_label, wo$scheduled_date))
-    
+
     ex_list <- sb_get("workout_exercises",
-                      sprintf("?workout_id=eq.%s&select=*,exercises(name,category)&order=exercise_order",
-                              wo$id))
+      sprintf("?workout_id=eq.%s&select=*,exercises(name,category)&order=exercise_order",
+              wo$id))
     if (!is.null(ex_list) && nrow(ex_list) > 0) {
       for (j in seq_len(nrow(ex_list))) {
         e <- ex_list[j, ]
         ss <- if (!is.null(e$superset_group) && !is.na(e$superset_group))
-          sprintf("[%s] ", e$superset_group) else "    "
+                sprintf("[%s] ", e$superset_group) else "    "
         wu <- if (e$warmup_sets > 0) sprintf(" (+%dWU)", e$warmup_sets) else ""
         cat(sprintf("  %d. %s%s%s — %dx %d-%d @ RPE %.1f\n",
-                    e$exercise_order, ss,
-                    e$exercises$name,
-                    wu,
-                    e$prescribed_sets,
-                    e$rep_range_low, e$rep_range_high,
+                    e$exercise_order, ss, e$exercises$name, wu,
+                    e$prescribed_sets, e$rep_range_low, e$rep_range_high,
                     e$rpe_target))
       }
     }
@@ -848,77 +1030,26 @@ preview_program <- function(program_id, week = 1) {
 }
 
 # ============================================================
-# 9. REGENERATE: update remaining sessions after a swap
+# 11. REGENERATE FROM WEEK: swap a single exercise forward
 # ============================================================
 regenerate_from_week <- function(program_id, user_id, from_week,
                                  swapped_exercise_id, replacement_exercise_id) {
-  # Fetch program details
-  prog <- sb_get("programs", sprintf("?id=eq.%s", program_id))
-  if (is.null(prog) || nrow(prog) == 0) stop("Program not found")
-  prog <- prog[1, ]
-  
-  # Fetch all future workout_exercises with the swapped exercise
+  future_wkts <- sb_get("workouts",
+    sprintf("?program_id=eq.%s&week_number=gte.%d&select=id",
+            program_id, from_week))
+  if (is.null(future_wkts) || nrow(future_wkts) == 0) {
+    cat("No future workouts to update.\n"); return(invisible(NULL))
+  }
   future_we <- sb_get("workout_exercises",
-                      sprintf(
-                        "?workout_id=in.(%s)&exercise_id=eq.%s",
-                        paste(
-                          sb_get("workouts",
-                                 sprintf("?program_id=eq.%s&week_number=gte.%d&select=id", program_id, from_week)
-                          )$id,
-                          collapse = ","
-                        ),
-                        swapped_exercise_id
-                      )
-  )
-  
+    sprintf("?workout_id=in.(%s)&exercise_id=eq.%s",
+            paste(future_wkts$id, collapse = ","),
+            swapped_exercise_id))
   if (is.null(future_we) || nrow(future_we) == 0) {
-    cat("No future instances of this exercise found.\n")
-    return(invisible(NULL))
+    cat("No future instances of this exercise.\n"); return(invisible(NULL))
   }
-  
-  # Update each with the replacement exercise
-  for (we_id in future_we$id) {
-    sb_patch("workout_exercises",
-             sprintf("?id=eq.%s", we_id),
+  for (we_id in future_we$id)
+    sb_patch("workout_exercises", sprintf("?id=eq.%s", we_id),
              list(exercise_id = replacement_exercise_id, is_swapped = TRUE))
-  }
-  
-  cat(sprintf("Updated %d future sessions: swapped exercise %s → %s\n",
-              nrow(future_we), swapped_exercise_id, replacement_exercise_id))
+  cat(sprintf("Updated %d future sessions.\n", nrow(future_we)))
   invisible(nrow(future_we))
 }
-
-# ============================================================
-# EXAMPLE USAGE (comment out after first run)
-# ============================================================
-
-# Step 1: Make sure you have a user in auth.users.
-#         For testing, use the Supabase service role to create one:
-#
-# TEST_USER_ID <- "paste-a-uuid-here"  # get from Supabase Auth dashboard
-#
-# Step 2: Generate the program
-#
-# program_id <- generate_program(
-#   user_id          = TEST_USER_ID,
-#   goal             = "hypertrophy",
-#   difficulty       = "intermediate",
-#   sessions_per_week = 3L,
-#   split_style      = "full_body",
-#   equipment        = c(
-#     "barbell", "dumbbells", "ez_bar", "squat_rack", "bench",
-#     "cable_machine", "lat_pulldown_machine", "leg_press_machine",
-#     "hack_squat_machine", "leg_extension_machine",
-#     "seated_leg_curl_machine", "hip_thrust_machine",
-#     "hip_abduction_machine", "calf_raise_machine",
-#     "pec_dec_machine", "chest_press_machine",
-#     "incline_press_machine", "shoulder_press_machine",
-#     "lateral_raise_machine", "ab_machine", "pullup_bar",
-#     "seated_calf_raise_machine", "dip_bars"
-#   ),
-#   start_date       = Sys.Date()
-# )
-#
-# Step 3: Preview any week
-# preview_program(program_id, week = 5)   # see block B variation
-# preview_program(program_id, week = 9)   # see block C variation

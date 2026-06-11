@@ -96,45 +96,6 @@ make_session_timer_js <- function(workout_id) {
 }
 
 
-# ── FETCH WORKOUT DATA ───────────────────────────────────────
-fetch_workout_data <- function(workout_id, user_id, token) {
-  workout <- sb_select("workouts",
-                       sprintf("?id=eq.%s&user_id=eq.%s", workout_id, user_id),
-                       token = token)
-  if (is.null(workout)) return(NULL)
-  we <- sb_select("workout_exercises",
-                  sprintf("?workout_id=eq.%s&select=*,exercises(*)&order=exercise_order",
-                          workout_id),
-                  token = token)
-  if (is.null(we)) return(list(workout = workout, exercises = NULL, last_logs = NULL))
-  ex_ids  <- paste(we$exercise_id, collapse = ",")
-  last_logs <- sb_select("workout_set_logs",
-                         sprintf("?user_id=eq.%s&workout_exercise_id=in.(%s)&select=*,workout_exercises(exercise_id)&order=logged_at.desc",
-                                 user_id, paste(we$id, collapse = ",")),
-                         token = token)
-  hist_logs <- list()
-  for (eid in we$exercise_id) {
-    h <- sb_select("workout_set_logs",
-                   sprintf(paste0("?user_id=eq.%s",
-                                  "&workout_exercise_id=in.(%s)",
-                                  "&is_warmup=eq.false",
-                                  "&select=weight_lbs,reps_completed,rpe_actual,notes,logged_at",
-                                  "&order=logged_at.desc&limit=5"),
-                           user_id,
-                           sprintf("(select id from workout_exercises where exercise_id=eq.%s)", eid)),
-                   token = token)
-    if (!is.null(h)) hist_logs[[eid]] <- h
-  }
-  list(workout = workout, exercises = we, last_logs = last_logs, hist_logs = hist_logs)
-}
-
-# Simpler last-performance fetch that actually works with Supabase REST
-fetch_last_performance <- function(exercise_id, user_id, token) {
-  sb_select("last_exercise_log",
-            sprintf("?user_id=eq.%s&exercise_id=eq.%s", user_id, exercise_id),
-            token = token)
-}
-
 # ── EXERCISE HISTORY ─────────────────────────────────────────
 fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) {
   we_ids <- tryCatch(
@@ -194,71 +155,33 @@ fetch_last_performance <- function(exercise_id, user_id, token) {
     error = \(e) NULL)
 }
 
-# ── EXERCISEDB GIF HELPERS ───────────────────────────────────
-fetch_exercise_gif <- function(exercise_name, api_key) {
-  if (is.null(api_key) || nchar(api_key) == 0)
-    return(list(url = NULL, error = "no_key"))
+# ── SUGGESTED WEIGHT (Nippard-style intensity-from-RIR scaling) ──
+# Given last logged performance, estimate 1RM (Epley/Brzycki blend)
+# and scale it to the current block's RIR + the rep range midpoint.
+# The lifter is free to override — this is a suggestion, not a
+# prescription. Returns NA if there's no last-performance data.
+#
+# Math: %1RM ≈ 1 / (1 + (target_reps + RIR) / 30)   [Epley inverse]
+#       suggested = e1RM × %1RM, rounded to 2.5 lb plate increments
+suggest_weight <- function(last_log, target_reps, week_number) {
+  if (is.null(last_log)) return(NA_real_)
+  w <- tryCatch(as.numeric(last_log$weight_lbs),    error = \(e) NA_real_)
+  r <- tryCatch(as.integer(last_log$reps_completed), error = \(e) NA_integer_)
+  if (is.na(w) || is.na(r) || w <= 0 || r <= 0) return(NA_real_)
 
-  try_query <- function(q) {
-    encoded <- utils::URLencode(tolower(trimws(q)), reserved = TRUE)
-    url <- paste0("https://exercisedb.p.rapidapi.com/exercises/name/", encoded,
-                  "?limit=10&offset=0")
-    resp <- tryCatch(
-      request(url) |>
-        req_headers("X-RapidAPI-Key"  = api_key,
-                    "X-RapidAPI-Host" = "exercisedb.p.rapidapi.com") |>
-        req_error(is_error = \(r) FALSE) |>
-        req_perform(),
-      error = \(e) NULL)
-    if (is.null(resp))  return(list(url = NULL, error = "request_failed"))
-    if (resp$status_code != 200) {
-      body <- tryCatch(substr(resp_body_string(resp), 1, 200), error = \(e) "")
-      return(list(url = NULL, error = paste0("http_", resp$status_code, ": ", body)))
-    }
-    body_str <- tryCatch(resp_body_string(resp), error = \(e) "")
-    data <- tryCatch(fromJSON(body_str, simplifyDataFrame = TRUE), error = \(e) NULL)
-    if (is.data.frame(data) && nrow(data) > 0) {
-      gif <- tryCatch(data$gifUrl[1], error = \(e) NULL)
-      if (!is.null(gif) && !is.na(gif) && nchar(gif) > 0)
-        return(list(url = gif, error = NULL))
-    }
-    if (is.list(data) && !is.null(data$exercises) &&
-        is.data.frame(data$exercises) && nrow(data$exercises) > 0) {
-      gif <- tryCatch(data$exercises$gifUrl[1], error = \(e) NULL)
-      if (!is.null(gif) && !is.na(gif) && nchar(gif) > 0)
-        return(list(url = gif, error = NULL))
-    }
-    list(url = NULL, error = paste0("no_match(", substr(body_str, 1, 80), ")"))
-  }
+  # estimate_1rm() lives in progress_screen.R — sourced before runtime
+  e1rm <- tryCatch(estimate_1rm(w, r), error = \(e) NA_real_)
+  if (is.null(e1rm) || is.na(e1rm) || e1rm <= 0) return(NA_real_)
 
-  # Up to 3 attempts, ordered to conserve the free-tier quota (50 req/day):
-  #  1. full name as-is        ("Barbell Back Squat")
-  #  2. strip equipment prefix  ("Back Squat")
-  #  3. last word only          ("Squat")
-  words    <- strsplit(trimws(exercise_name), "\\s+")[[1]]
-  equip_rx <- "^(barbell|dumbbell|dumbell|cable|machine|ez.?bar|kettlebell|resistance band|smith)\\s+"
-  no_equip <- trimws(sub(equip_rx, "", exercise_name, ignore.case = TRUE))
-  queries  <- unique(c(exercise_name,
-                       if (no_equip != exercise_name) no_equip,
-                       tail(words, 1)))
+  block <- tryCatch(c("A","B","C")[ceiling(as.integer(week_number) / 4)],
+                    error = \(e) "B")
+  rir <- tryCatch(BLOCK_PROFILES[[block]]$rir_target, error = \(e) 2.0)
+  if (is.null(rir) || is.na(rir)) rir <- 2.0
 
-  last_err <- "no_match"
-  for (q in queries) {
-    res <- try_query(q)
-    message(sprintf("[GIF] query='%s' -> %s", q, if (!is.null(res$url)) "FOUND" else res$error))
-    if (!is.null(res$url)) return(list(url = res$url, error = NULL))
-    last_err <- res$error %||% last_err
-  }
-  list(url = NULL, error = last_err)
-}
+  effort_reps <- as.numeric(target_reps) + as.numeric(rir)
+  pct_1rm     <- 1 / (1 + effort_reps / 30)
 
-cache_exercise_gif <- function(exercise_id, gif_url, svc_token) {
-  tryCatch(
-    sb_update("exercises",
-              sprintf("?id=eq.%s", exercise_id),
-              list(gif_url = gif_url),
-              token = svc_token),
-    error = \(e) NULL)
+  round(e1rm * pct_1rm / 2.5) * 2.5
 }
 
 # ── EXERCISE GROUP BUILDER ───────────────────────────────────
@@ -285,7 +208,7 @@ build_exercise_groups <- function(exercises) {
 # ── WORKOUT SCREEN UI ────────────────────────────────────────
 workout_screen_ui <- function(workout, exercises, last_perf_map,
                               set_logs_rv, timer_active,
-                              gif_map = list(), history_map = list()) {
+                              history_map = list()) {
 
   if (is.null(workout) || is.null(exercises)) {
     return(div(style = "padding:40px; text-align:center; color:#555;",
@@ -509,13 +432,6 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                 tools::toTitleCase(gsub("_", " ", ex_cat))
             }, error = \(e) tools::toTitleCase(gsub("_", " ", ex_cat)))
 
-            # GIF: session cache → DB cached → NULL
-            gif_url <- gif_map[[we$exercise_id]] %||%
-              tryCatch({
-                g <- ex_info$gif_url
-                if (!is.na(g) && nchar(g) > 0) g else NULL
-              }, error = \(e) NULL)
-
             # Rep-matched last performance: find the most recent log whose
             # reps fall within this exercise's target range. Falls back to
             # the most recent log if no rep-matched entry exists.
@@ -561,19 +477,8 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
               sep,
               div(style = "padding:12px 14px;",
 
-                  # ── Exercise header: thumbnail + info + action btns ──
+                  # ── Exercise header: info + action btns ──
                   div(style = "display:flex; align-items:flex-start; gap:10px; margin-bottom:10px;",
-
-                      # GIF thumbnail (only shown when loaded — no placeholder)
-                      if (!is.null(gif_url) && nchar(gif_url) > 0) {
-                        tags$img(
-                          src     = gif_url,
-                          alt     = ex_name,
-                          loading = "lazy",
-                          style   = paste0(
-                            "width:58px; height:58px; border-radius:10px;",
-                            "object-fit:cover; background:#111; flex-shrink:0;"))
-                      },
 
                       # Name + tags
                       div(style = "flex:1; min-width:0;",
@@ -627,19 +532,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                                       title   = "Swap exercise",
                                       onclick = sprintf(
                                         "Shiny.setInputValue('swap_exercise','%s|%s',{priority:'event'})",
-                                        we$id, we$exercise_id)),
-                          if (nchar(EXERCISEDB_API_KEY) > 0 &&
-                              (is.null(gif_url) || nchar(gif_url %||% "") == 0))
-                            tags$button("GIF",
-                                        style = paste0(
-                                          "background:#1e1e1e; border:none; border-radius:7px;",
-                                          "padding:4px 7px; font-size:10px; color:#888;",
-                                          "cursor:pointer; letter-spacing:0.04em;"),
-                                        title   = "Load form demo GIF",
-                                        onclick = sprintf(
-                                          "Shiny.setInputValue('load_exercise_gif','%s',{priority:'event'})",
-                                          paste0(we$exercise_id, "|",
-                                                 gsub("'", "", ex_name, fixed = TRUE))))
+                                        we$id, we$exercise_id))
                       )
                   ),
 
@@ -651,16 +544,31 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           "font-size:11px; color:#5DCAA5; margin-bottom:10px; line-height:1.4;"),
                         note_tip),
 
-                  # Last performance reference
-                  if (!is.null(last))
-                    div(style = "font-size:11px; color:#888; margin-bottom:8px;",
-                        paste0("Last: ",
-                               if (!is.na(last$weight_lbs))
-                                 paste0(last$weight_lbs, " lbs × ")
-                               else "BW × ",
-                               last$reps_completed, " reps",
-                               if (!is.na(last$rpe_actual))
-                                 paste0(" @ RPE ", last$rpe_actual) else "")),
+                  # Last performance reference + smart suggestion
+                  {
+                    target_reps_mid <- (we$rep_range_low + we$rep_range_high) / 2
+                    suggested_wt    <- if (!is.null(last))
+                      suggest_weight(last, target_reps_mid, wo$week_number)
+                      else NA_real_
+                    if (!is.null(last)) {
+                      tagList(
+                        div(style = "font-size:11px; color:#888; margin-bottom:2px;",
+                            paste0("Last: ",
+                                   if (!is.na(last$weight_lbs))
+                                     paste0(last$weight_lbs, " lbs × ")
+                                   else "BW × ",
+                                   last$reps_completed, " reps",
+                                   if (!is.na(last$rpe_actual))
+                                     paste0(" @ RPE ", last$rpe_actual) else "")),
+                        if (!is.na(suggested_wt) && suggested_wt > 0)
+                          div(style = "font-size:11px; color:#5DCAA5; margin-bottom:8px;",
+                              paste0("Suggested today: ", suggested_wt, " lbs × ",
+                                     we$rep_range_low, "–", we$rep_range_high, " reps"))
+                        else
+                          div(style = "margin-bottom:8px;")
+                      )
+                    }
+                  },
 
                   # Warmup sets note
                   if (!is.null(we$warmup_sets) && !is.na(we$warmup_sets) && we$warmup_sets > 0)
@@ -694,11 +602,18 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                     lapply(seq_len(we$prescribed_sets), function(s) {
                       set_key   <- paste0(we$id, "_s", s)
                       log_entry <- if (s <= length(we_logs)) we_logs[[s]] else NULL
-                      is_logged <- !is.null(log_entry)
+                      # editing=TRUE re-opens a previously logged set for correction —
+                      # the green ✓ button toggles this on, log_set toggles it off.
+                      is_editing <- isTRUE(tryCatch(log_entry$editing, error = \(e) FALSE))
+                      is_logged <- !is.null(log_entry) && !is_editing
                       is_drop   <- !is.null(we$set_type) && !is.na(we$set_type) &&
                                    we$set_type == "drop_set" && s == we$prescribed_sets
 
-                      def_weight <- if (is_logged) log_entry$weight_lbs
+                      # When editing a previously logged set, defaults must
+                      # come from the stored values, NOT from a fresh
+                      # suggestion — otherwise the lifter can't correct a typo
+                      # without retyping everything from scratch.
+                      def_weight <- if (is_logged || is_editing) log_entry$weight_lbs
                         else if (is_drop && s > 1 && length(we_logs) >= s - 1) {
                           # Pre-fill drop set at ~50% of previous set
                           prev_w <- we_logs[[s-1]]$weight_lbs
@@ -706,13 +621,19 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           else NA
                         }
                         else if (s > 1 && length(we_logs) >= s - 1) we_logs[[s-1]]$weight_lbs
-                        else if (!is.null(last)) last$weight_lbs
+                        else if (!is.null(last)) {
+                          # First set with no current data: use Nippard-style
+                          # suggestion derived from e1RM × block RIR target.
+                          tr_mid <- (we$rep_range_low + we$rep_range_high) / 2
+                          sugg   <- suggest_weight(last, tr_mid, wo$week_number)
+                          if (!is.na(sugg) && sugg > 0) sugg else last$weight_lbs
+                        }
                         else NA
-                      def_reps <- if (is_logged) log_entry$reps_completed
+                      def_reps <- if (is_logged || is_editing) log_entry$reps_completed
                         else if (!is.null(last)) last$reps_completed
                         else we$rep_range_low
                       def_rpe  <- tryCatch({
-                        raw <- if (is_logged) log_entry$rpe_actual
+                        raw <- if (is_logged || is_editing) log_entry$rpe_actual
                           else if (s > 1 && length(we_logs) >= s - 1) we_logs[[s-1]]$rpe_actual
                           else if (!is.null(last) && !is.na(last$rpe_actual)) last$rpe_actual
                           else NA
@@ -796,14 +717,21 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           ),
 
                           # Log / check button
-                          # Completed = filled green ✓ (static)
-                          # Incomplete = empty grey circle (tappable)
+                          # Completed = filled green ✓ (tap to edit)
+                          # Incomplete = empty grey circle (tap to log)
                           if (is_logged)
-                            div(style = paste0(
-                                  "background:#1D9E75; border-radius:7px;",
-                                  "width:34px; height:34px; display:flex;",
-                                  "align-items:center; justify-content:center;"),
-                                div(style = "color:#fff; font-size:17px; font-weight:700;", "✓"))
+                            tags$button(
+                              "✓",
+                              title = "Tap to edit",
+                              style = paste0(
+                                "background:#1D9E75; color:#fff; border:none;",
+                                "border-radius:7px; font-size:17px; font-weight:700;",
+                                "cursor:pointer;",
+                                "width:34px; height:34px; display:flex;",
+                                "align-items:center; justify-content:center; line-height:1;"),
+                              onclick = sprintf(
+                                "Shiny.setInputValue('edit_set','%s|%d',{priority:'event'})",
+                                we$id, s))
                           else
                             tags$button(
                               "○",
@@ -1088,82 +1016,284 @@ swap_modal_ui <- function(we_id, exercise_id, suggestions) {
   )
 }
 
+# ── WORKOUT PREVIEW UI ───────────────────────────────────────
+# Read-only view of an upcoming session. Shown when the user taps
+# an incomplete session card on the dashboard. From here they can
+# choose Start Session (→ logging screen) or Back.
+workout_preview_ui <- function(workout, exercises) {
+  if (is.null(workout) || is.null(exercises))
+    return(div(style = "padding:40px; text-align:center; color:#555;",
+               "Loading preview..."))
+
+  wo   <- if (is.data.frame(workout)) workout[1, ] else workout
+  n_ex <- nrow(exercises)
+
+  # ── Estimated duration ─────────────────────────────────────
+  est_min <- tryCatch({
+    total_sec <- sum(vapply(seq_len(n_ex), function(i) {
+      n_sets <- as.integer(exercises$prescribed_sets[i] %||% 3L)
+      rest   <- as.integer(exercises$rest_seconds[i]    %||% 120L)
+      warm   <- as.integer(exercises$warmup_sets[i]     %||% 0L)
+      set_time  <- 45L + rest       # ~45s execute + rest
+      warm_time <- 30L + 60L
+      n_sets * set_time + warm * warm_time
+    }, numeric(1)))
+    round(total_sec / 60)
+  }, error = \(e) NA)
+
+  # ── Muscle stimulus tally (primary muscles × prescribed sets) ──
+  muscle_tally <- list()
+  for (i in seq_len(n_ex)) {
+    n_sets  <- as.integer(exercises$prescribed_sets[i] %||% 0L)
+    ex_info <- tryCatch(exercises$exercises[i, ], error = \(e) NULL)
+    if (is.null(ex_info)) next
+    prim <- tryCatch(unlist(ex_info$primary_muscles), error = \(e) character(0))
+    for (m in prim)
+      muscle_tally[[m]] <- (muscle_tally[[m]] %||% 0L) + n_sets
+  }
+  if (length(muscle_tally) > 0)
+    muscle_tally <- muscle_tally[order(-unlist(muscle_tally))]
+
+  tagList(
+    # Top nav
+    div(style = paste0("display:flex; align-items:center; gap:10px;",
+                       "margin-bottom:14px; padding:0 2px;"),
+        tags$button("←",
+          style = paste0("background:#1e1e1e; border:none; border-radius:10px;",
+                         "width:38px; height:38px; font-size:17px; color:#aaa;",
+                         "cursor:pointer; flex-shrink:0;"),
+          onclick = "Shiny.setInputValue('close_preview', Math.random(), {priority:'event'})"),
+        div(style = "flex:1; text-align:center;",
+            div(style = "font-size:10px; color:#444; text-transform:uppercase; letter-spacing:0.07em;",
+                paste0("Week ", wo$week_number, " · Day ", wo$session_number,
+                       " · Preview")),
+            div(style = "font-size:15px; font-weight:700; color:#f0f0f0; line-height:1.2;",
+                wo$session_label)),
+        div(style = "width:38px;")
+    ),
+
+    # Stats grid
+    div(style = "display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;
+                 margin-bottom:14px;",
+        div(style = "background:#161616; border:1px solid #222; border-radius:10px;
+                     padding:12px 8px; text-align:center;",
+            div(style = "font-size:18px; font-weight:700; color:#1D9E75;",
+                if (!is.na(est_min)) paste0(est_min, " min") else "—"),
+            div(style = "font-size:10px; color:#555; text-transform:uppercase;
+                         letter-spacing:0.06em; margin-top:2px;", "Est. duration")),
+        div(style = "background:#161616; border:1px solid #222; border-radius:10px;
+                     padding:12px 8px; text-align:center;",
+            div(style = "font-size:18px; font-weight:700; color:#f0f0f0;",
+                sum(as.integer(exercises$prescribed_sets), na.rm = TRUE)),
+            div(style = "font-size:10px; color:#555; text-transform:uppercase;
+                         letter-spacing:0.06em; margin-top:2px;", "Total sets")),
+        div(style = "background:#161616; border:1px solid #222; border-radius:10px;
+                     padding:12px 8px; text-align:center;",
+            div(style = "font-size:18px; font-weight:700; color:#f0f0f0;", n_ex),
+            div(style = "font-size:10px; color:#555; text-transform:uppercase;
+                         letter-spacing:0.06em; margin-top:2px;", "Exercises"))
+    ),
+
+    # Muscle stimulus
+    if (length(muscle_tally) > 0)
+      div(style = "background:#161616; border:1px solid #222; border-radius:10px;
+                   padding:12px 14px; margin-bottom:14px;",
+          div(class = "ct-section-title", "MUSCLE STIMULUS (working sets)"),
+          div(style = "display:flex; flex-wrap:wrap; gap:5px;",
+              lapply(names(muscle_tally), function(m)
+                span(style = paste0("font-size:11px; color:#5DCAA5;",
+                                     "background:#061a12; border:1px solid #0F6E56;",
+                                     "border-radius:5px; padding:3px 8px;"),
+                     paste0(tools::toTitleCase(gsub("_", " ", m)),
+                            " · ", muscle_tally[[m]]))
+              )
+          )
+      ),
+
+    # Exercise list (read-only)
+    lapply(seq_len(n_ex), function(i) {
+      we      <- exercises[i, ]
+      ex_info <- tryCatch(we$exercises, error = \(e) NULL)
+      ex_name <- if (!is.null(ex_info) && !is.null(ex_info$name))
+                   ex_info$name else paste("Exercise", i)
+      note <- tryCatch({
+        n <- ex_info$coaching_note
+        if (!is.na(n) && nchar(n) > 0) n else NULL
+      }, error = \(e) NULL)
+      prim_raw <- tryCatch(unlist(ex_info$primary_muscles), error = \(e) character(0))
+      muscles  <- tools::toTitleCase(paste(gsub("_", " ", head(prim_raw, 2)),
+                                            collapse = ", "))
+      ss <- tryCatch(we$superset_group, error = \(e) NA)
+      is_ss <- !is.null(ss) && length(ss) == 1 && !is.na(ss) && nchar(as.character(ss)) > 0
+
+      div(style = paste0("background:#141414; border:1px solid #1c1c1c;",
+                         "border-radius:12px; padding:12px 14px; margin-bottom:8px;"),
+          div(style = "display:flex; gap:10px; align-items:flex-start;",
+              div(style = "flex:1; min-width:0;",
+                  div(style = "display:flex; align-items:center; gap:6px; flex-wrap:wrap;",
+                      div(style = "font-size:14px; font-weight:700; color:#f0f0f0;",
+                          ex_name),
+                      if (is_ss)
+                        span(style = paste0("font-size:9px; color:#5DCAA5;",
+                                             "background:#061a12; border:1px solid #0F6E56;",
+                                             "border-radius:4px; padding:2px 5px;"),
+                             paste0("Superset ", ss))
+                  ),
+                  if (nchar(muscles) > 0)
+                    div(style = "font-size:10px; color:#888; margin-top:2px;", muscles),
+                  div(style = "font-size:11px; color:#5DCAA5; margin-top:4px;",
+                      paste0(we$prescribed_sets, " × ",
+                             we$rep_range_low, "–", we$rep_range_high, " reps",
+                             "  ·  RPE ", we$rpe_target,
+                             "  ·  Rest ",
+                             if (we$rest_seconds >= 60)
+                               paste0(round(we$rest_seconds / 60, 1), " min")
+                             else paste0(we$rest_seconds, "s")))
+              )
+          ),
+          if (!is.null(note))
+            div(style = paste0("background:#061a12; border-left:2px solid #1D9E75;",
+                               "border-radius:0 6px 6px 0; padding:6px 10px;",
+                               "font-size:11px; color:#5DCAA5; margin-top:8px;",
+                               "line-height:1.4;"),
+                note)
+      )
+    }),
+
+    # Action buttons
+    div(style = "margin-top:20px; padding-bottom:32px;",
+        tags$button("Start Session →",
+          style = paste0("width:100%; background:#1D9E75; color:#fff; border:none;",
+                         "border-radius:14px; padding:16px; font-size:16px;",
+                         "font-weight:700; cursor:pointer; letter-spacing:0.02em;",
+                         "box-shadow:0 4px 20px rgba(29,158,117,0.35);"),
+          onclick = sprintf(
+            "Shiny.setInputValue('start_from_preview','%s',{priority:'event'})",
+            wo$id)),
+        tags$button("← Back to Calendar",
+          style = paste0("width:100%; background:none; color:#555; border:none;",
+                         "border-radius:12px; padding:12px; font-size:13px;",
+                         "cursor:pointer; margin-top:8px;"),
+          onclick = "Shiny.setInputValue('close_preview', Math.random(), {priority:'event'})")
+    )
+  )
+}
+
 # ── WORKOUT SERVER LOGIC ─────────────────────────────────────
 setup_workout_server <- function(input, output, session, rv) {
 
-  # ── Open a workout ───────────────────────────────────────────
-  observeEvent(input$open_workout, {
-    rv$active_workout_id <- input$open_workout
+  # ── Preview an upcoming workout ─────────────────────────────
+  observeEvent(input$open_preview, {
+    rv$preview_workout_id <- input$open_preview
+    rv$page    <- "preview"
+    rv$nav_tab <- "dashboard"
+
+    withProgress(message = "Loading preview...", value = 0.5, {
+      data <- tryCatch({
+        wo <- sb_select("workouts",
+          sprintf("?id=eq.%s", rv$preview_workout_id), token = rv$token)
+        we <- sb_select("workout_exercises",
+          sprintf("?workout_id=eq.%s&select=*,exercises(*)&order=exercise_order",
+                  rv$preview_workout_id), token = rv$token)
+        list(workout = wo, exercises = we)
+      }, error = \(e) { message("Preview load error: ", e$message); NULL })
+
+      if (!is.null(data)) {
+        rv$preview_workout   <- data$workout
+        rv$preview_exercises <- data$exercises
+      }
+    })
+  })
+
+  # ── Close preview → back to dashboard ───────────────────────
+  observeEvent(input$close_preview, {
+    rv$preview_workout_id <- NULL
+    rv$preview_workout    <- NULL
+    rv$preview_exercises  <- NULL
+    rv$page    <- "dashboard"
+    rv$nav_tab <- "dashboard"
+  })
+
+  # ── Start session from preview ──────────────────────────────
+  # Clears preview state, then immediately runs the open_workout logic.
+  # Done inline (rather than re-firing open_workout) to keep it synchronous.
+  observeEvent(input$start_from_preview, {
+    wid <- input$start_from_preview
+    if (is.null(wid) || nchar(wid) == 0) return()
+
+    rv$preview_workout_id <- NULL
+    rv$preview_workout    <- NULL
+    rv$preview_exercises  <- NULL
+
+    rv$active_workout_id <- wid
     rv$page    <- "workout"
     rv$nav_tab <- "log"
-
-    # Reset session elapsed timer in the browser
     session$sendCustomMessage("reset_session_timer", list())
+    rv$session_start_time <- Sys.time()
 
     withProgress(message = "Loading session...", value = 0.5, {
       data <- tryCatch({
         wo <- sb_select("workouts",
-                        sprintf("?id=eq.%s", rv$active_workout_id),
-                        token = rv$token)
+          sprintf("?id=eq.%s", wid), token = rv$token)
         we <- sb_select("workout_exercises",
-                        sprintf("?workout_id=eq.%s&select=*,exercises(*)&order=exercise_order",
-                                rv$active_workout_id),
-                        token = rv$token)
+          sprintf("?workout_id=eq.%s&select=*,exercises(*)&order=exercise_order",
+                  wid), token = rv$token)
         list(workout = wo, exercises = we)
-      }, error = \(e) { message("Load workout error: ", e$message); NULL })
+      }, error = \(e) { message("Start session load error: ", e$message); NULL })
 
       if (!is.null(data)) {
         rv$active_workout   <- data$workout
         rv$active_exercises <- data$exercises
-
-        rv$last_perf_map <- list()
+        rv$last_perf_map    <- list()
         if (!is.null(data$exercises)) {
           for (i in seq_len(nrow(data$exercises))) {
             eid  <- data$exercises$exercise_id[i]
             last <- tryCatch(
               fetch_last_performance(eid, rv$user_id, rv$token),
               error = \(e) NULL)
-            # Store full data frame (multi-row) so the renderer can
-            # filter by matching rep range for a more accurate pre-fill.
-            if (!is.null(last) && nrow(last) > 0) rv$last_perf_map[[eid]] <- last
+            if (!is.null(last) && nrow(last) > 0)
+              rv$last_perf_map[[eid]] <- last
           }
         }
       }
-    })
 
-    # Load existing set logs from Supabase so re-opening shows prior work
-    rv$set_logs <- list()
-    if (!is.null(data) && !is.null(data$exercises) && nrow(data$exercises) > 0) {
-      we_ids <- paste(data$exercises$id, collapse = ",")
-      existing <- tryCatch(
-        sb_select("workout_set_logs",
-                  sprintf("?user_id=eq.%s&workout_exercise_id=in.(%s)&order=set_number",
-                          rv$user_id, we_ids),
-                  token = rv$token),
-        error = \(e) NULL)
-      if (!is.null(existing) && nrow(existing) > 0) {
-        for (i in seq_len(nrow(existing))) {
-          row   <- existing[i, ]
-          we_id <- row$workout_exercise_id
-          set_n <- as.integer(row$set_number)
-          if (is.null(rv$set_logs[[we_id]])) rv$set_logs[[we_id]] <- list()
-          rv$set_logs[[we_id]][[set_n]] <- list(
-            weight_lbs     = row$weight_lbs,
-            reps_completed = row$reps_completed,
-            rpe_actual     = row$rpe_actual,
-            notes          = row$notes,
-            set_number     = set_n
-          )
+      rv$set_logs <- list()
+      if (!is.null(data) && !is.null(data$exercises) && nrow(data$exercises) > 0) {
+        we_ids <- paste(data$exercises$id, collapse = ",")
+        existing <- tryCatch(
+          sb_select("workout_set_logs",
+            sprintf("?user_id=eq.%s&workout_exercise_id=in.(%s)&order=set_number",
+                    rv$user_id, we_ids),
+            token = rv$token),
+          error = \(e) NULL)
+        if (!is.null(existing) && nrow(existing) > 0) {
+          for (i in seq_len(nrow(existing))) {
+            row   <- existing[i, ]
+            we_id <- row$workout_exercise_id
+            set_n <- as.integer(row$set_number)
+            if (is.null(rv$set_logs[[we_id]])) rv$set_logs[[we_id]] <- list()
+            rv$set_logs[[we_id]][[set_n]] <- list(
+              id             = row$id,
+              weight_lbs     = row$weight_lbs,
+              reps_completed = row$reps_completed,
+              rpe_actual     = row$rpe_actual,
+              notes          = row$notes,
+              set_number     = set_n
+            )
+          }
         }
-        message(sprintf("Loaded %d existing set logs for workout %s",
-                        nrow(existing), rv$active_workout_id))
       }
-    }
 
-    rv$swap_we_id       <- NULL
-    rv$swap_ex_id       <- NULL
-    rv$swap_suggestions <- NULL
+      rv$swap_we_id       <- NULL
+      rv$swap_ex_id       <- NULL
+      rv$swap_suggestions <- NULL
+    })
   })
+
+  # Note: there's no standalone open_workout observer anymore — every
+  # entry point goes through open_preview → start_from_preview, which
+  # handles all the load logic above. If a future caller needs to skip
+  # the preview, add an observer here that delegates to the same load.
 
   # ── Close workout ────────────────────────────────────────────
   observeEvent(input$close_workout, {
@@ -1172,7 +1302,25 @@ setup_workout_server <- function(input, output, session, rv) {
     rv$active_workout_id <- NULL
   })
 
-  # ── Log a set ────────────────────────────────────────────────
+  # ── Edit a logged set: flip it back into input mode ─────────
+  # Triggered by tapping the green ✓ button on a logged set row.
+  # The set retains its server id so the subsequent log_set call
+  # PATCHes the existing row instead of inserting a duplicate.
+  observeEvent(input$edit_set, {
+    parts <- strsplit(input$edit_set, "\\|")[[1]]
+    if (length(parts) < 2) return()
+    we_id   <- parts[1]
+    set_num <- as.integer(parts[2])
+    current <- rv$set_logs[[we_id]] %||% list()
+    if (length(current) >= set_num && !is.null(current[[set_num]])) {
+      current[[set_num]]$editing <- TRUE
+      rv$set_logs[[we_id]] <- current
+    }
+  })
+
+  # ── Log (or update) a set ────────────────────────────────────
+  # If the local entry already has an id, we PATCH that row.
+  # Otherwise INSERT a new row and capture its id from the response.
   observeEvent(input$log_set, {
     parts   <- strsplit(input$log_set, "\\|")[[1]]
     if (length(parts) < 2) return()
@@ -1199,6 +1347,12 @@ setup_workout_server <- function(input, output, session, rv) {
       return()
     }
 
+    # Check for an existing entry (edit case): if it has an id,
+    # PATCH that row instead of inserting a duplicate.
+    existing    <- if (length(rv$set_logs[[we_id]]) >= set_num)
+                     rv$set_logs[[we_id]][[set_num]] else NULL
+    existing_id <- tryCatch(existing$id, error = \(e) NULL)
+
     log_row <- list(
       workout_exercise_id = we_id,
       user_id             = rv$user_id,
@@ -1210,15 +1364,33 @@ setup_workout_server <- function(input, output, session, rv) {
       notes               = if (nchar(notes) > 0) notes else NULL
     )
 
-    resp <- sb_insert("workout_set_logs", log_row, token = rv$token)
+    is_edit <- !is.null(existing_id) && nchar(as.character(existing_id)) > 0
+    resp    <- if (is_edit)
+                 sb_update("workout_set_logs",
+                           sprintf("?id=eq.%s", existing_id),
+                           log_row, token = rv$token)
+               else
+                 sb_insert("workout_set_logs", log_row, token = rv$token)
 
-    if (resp$status_code %in% c(200, 201)) {
-      current           <- rv$set_logs[[we_id]] %||% list()
-      current[[set_num]] <- log_row
+    if (resp$status_code %in% c(200, 201, 204)) {
+      # On insert, capture the new row id so future taps can edit it
+      if (!is_edit) {
+        new_id <- tryCatch({
+          body <- fromJSON(resp_body_string(resp), simplifyDataFrame = TRUE)
+          if (is.data.frame(body)) body$id[1] else body[[1]]$id
+        }, error = \(e) NULL)
+        log_row$id <- new_id
+      } else {
+        log_row$id <- existing_id
+      }
+      log_row$editing <- FALSE
+
+      current             <- rv$set_logs[[we_id]] %||% list()
+      current[[set_num]]  <- log_row
       rv$set_logs[[we_id]] <- current
 
-      # Start rest timer
-      if (!is.null(rv$active_exercises)) {
+      # Only start the rest timer for fresh logs — edits don't need a rest
+      if (!is_edit && !is.null(rv$active_exercises)) {
         we_row <- rv$active_exercises[rv$active_exercises$id == we_id, ]
         if (nrow(we_row) > 0) {
           rest_s <- we_row$rest_seconds[1]
@@ -1226,7 +1398,10 @@ setup_workout_server <- function(input, output, session, rv) {
         }
       }
 
-      showNotification(paste0("Set ", set_num, " logged ✓"), type = "message", duration = 2)
+      showNotification(
+        paste0("Set ", set_num,
+               if (is_edit) " updated ✓" else " logged ✓"),
+        type = "message", duration = 2)
     } else {
       showNotification("Error saving set. Try again.", type = "error")
     }
@@ -1393,35 +1568,6 @@ setup_workout_server <- function(input, output, session, rv) {
     rv$exercise_history[[ex_id]] <- if (!is.null(hist)) hist else data.frame()
   })
 
-  # ── Load & cache exercise GIF ────────────────────────────────
-  observeEvent(input$load_exercise_gif, {
-    req(rv$token)
-    raw   <- input$load_exercise_gif %||% ""
-    parts <- strsplit(raw, "\\|")[[1]]
-    if (length(parts) < 2) return()
-    ex_id   <- parts[1]
-    ex_name <- paste(parts[-1], collapse = "|")
-
-    if (!is.null(rv$exercise_gifs[[ex_id]])) return()
-
-    result  <- fetch_exercise_gif(ex_name, EXERCISEDB_API_KEY)
-    gif_url <- result$url
-    if (is.null(gif_url)) {
-      err <- result$error %||% "unknown"
-      if (grepl("429", err)) {
-        showNotification("ExerciseDB daily limit reached (50 req/day). Try again tomorrow.",
-                         type = "warning", duration = 6)
-      } else {
-        showNotification(paste0("GIF not found [", err, "]"), type = "warning", duration = 6)
-      }
-      rv$exercise_gifs[[ex_id]] <- ""
-      return()
-    }
-
-    rv$exercise_gifs[[ex_id]] <- gif_url
-    svc <- if (nchar(SUPABASE_SERVICE_KEY) > 0) SUPABASE_SERVICE_KEY else rv$token
-    cache_exercise_gif(ex_id, gif_url, svc)
-  })
 }
 
 # ── SWAP SUGGESTIONS ─────────────────────────────────────────

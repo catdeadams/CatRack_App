@@ -29,12 +29,22 @@ server <- function(input, output, session) {
     ob_difficulty = "intermediate",
     ob_freq      = 3L,
     ob_split     = "full_body",
+    ob_session_length = 45L,
+    ob_pullup_baseline = 0L,
     ob_equipment = c(
       "barbell","dumbbells","squat_rack","bench","pullup_bar",
       "cable_machine","lat_pulldown_machine","leg_press_machine"
     ),
     ob_name      = "",
     ob_generating = FALSE,
+
+    # Methodology modal
+    show_methodology = FALSE,
+
+    # Workout preview
+    preview_workout_id = NULL,
+    preview_workout    = NULL,
+    preview_exercises  = NULL,
     
     # Progress
     all_logs           = NULL,
@@ -73,7 +83,6 @@ server <- function(input, output, session) {
     swap_ex_id         = NULL,
     swap_suggestions   = NULL,
     session_start_time = NULL,
-    exercise_gifs      = list(),  # exercise_id -> gif_url, session cache
     exercise_history   = list(),  # exercise_id -> data.frame of recent sessions
 
     # Workout summary (shown after finish_session)
@@ -252,6 +261,16 @@ server <- function(input, output, session) {
   observeEvent(input$select_split, {
     rv$ob_split <- input$select_split
   })
+
+  # ── ONBOARDING: session length ─────────────────────────────
+  observeEvent(input$select_session_length, {
+    rv$ob_session_length <- as.integer(input$select_session_length)
+  })
+
+  # ── ONBOARDING: pull-up baseline ───────────────────────────
+  observeEvent(input$select_pullup_baseline, {
+    rv$ob_pullup_baseline <- as.integer(input$select_pullup_baseline)
+  })
   
   # ── ONBOARDING: equipment toggle ───────────────────────────
   observeEvent(input$toggle_equip, {
@@ -316,6 +335,7 @@ server <- function(input, output, session) {
             difficulty       = rv$ob_difficulty,
             sessions_per_week = as.integer(rv$ob_freq),
             split_style      = rv$ob_split,
+            pullup_baseline  = as.integer(rv$ob_pullup_baseline %||% 0L),
             equipment_available = I(rv$ob_equipment)
           )
           sb_upsert("user_profiles", profile_data, token = rv$token)
@@ -336,6 +356,8 @@ server <- function(input, output, session) {
             difficulty        = rv$ob_difficulty,
             sessions_per_week = as.integer(rv$ob_freq),
             split_style       = rv$ob_split,
+            session_length_minutes = as.integer(rv$ob_session_length %||% 45L),
+            pullup_baseline   = as.integer(rv$ob_pullup_baseline %||% 0L),
             equipment         = rv$ob_equipment,
             block_number      = 1L,
             start_date        = Sys.Date()
@@ -406,6 +428,8 @@ server <- function(input, output, session) {
         difficulty       = rv$ob_difficulty,
         sessions_per_week = rv$ob_freq,
         split_style      = rv$ob_split,
+        session_length_minutes = rv$ob_session_length,
+        pullup_baseline  = rv$ob_pullup_baseline,
         equipment        = rv$ob_equipment,
         display_name     = rv$ob_name
       )
@@ -440,6 +464,18 @@ server <- function(input, output, session) {
                                              dashboard_page_ui(rv$program, rv$workouts)
                            ),
                            
+                           "preview" = div(class = "ct-content-with-nav",
+                                           if (!is.null(rv$preview_workout_id) && !is.null(rv$preview_workout)) {
+                                             workout_preview_ui(
+                                               workout   = rv$preview_workout,
+                                               exercises = rv$preview_exercises
+                                             )
+                                           } else {
+                                             div(style = "text-align:center; padding:40px; color:#555;",
+                                                 "Loading preview...")
+                                           }
+                           ),
+
                            "workout" = div(class = "ct-content-with-nav",
                                            uiOutput("timer_js"),
                                            if (!is.null(rv$active_workout_id) && !is.null(rv$active_workout)) {
@@ -450,7 +486,6 @@ server <- function(input, output, session) {
                                                  last_perf_map = rv$last_perf_map,
                                                  set_logs_rv   = rv$set_logs,
                                                  timer_active  = FALSE,
-                                                 gif_map       = rv$exercise_gifs,
                                                  history_map   = rv$exercise_history
                                                ),
                                                if (!is.null(rv$swap_we_id))
@@ -539,7 +574,9 @@ server <- function(input, output, session) {
                            div("Loading...")
     )
     
-    tagList(page_content, bottom_nav_ui(active = rv$nav_tab))
+    tagList(page_content,
+            bottom_nav_ui(active = rv$nav_tab),
+            if (isTRUE(rv$show_methodology)) methodology_modal_ui())
   })
   
   # ── Workout screen setup ────────────────────────────────────
@@ -548,6 +585,7 @@ server <- function(input, output, session) {
   setup_program_server(input, output, session, rv)
   setup_profile_server(input, output, session, rv)
   setup_summary_server(input, output, session, rv)
+  setup_methodology_server(input, output, session, rv)
   
   # ── Timer JS handler output ──────────────────────────────────
   output$timer_js <- renderUI({
@@ -612,7 +650,6 @@ server <- function(input, output, session) {
     rv$recovery_token <- NULL
     rv$pw_reset_error <- NULL
     rv$set_logs       <- list()
-    rv$exercise_gifs    <- list()
     rv$exercise_history <- list()
     rv$activity_feed    <- NULL
     rv$auth_mode    <- "login"
@@ -634,8 +671,12 @@ server <- function(input, output, session) {
     }
   })
   
-  # ── Auto-refresh workouts every 30s when on dashboard ──────
-  autoInvalidate <- reactiveTimer(30000)
+  # ── Auto-refresh workouts every 2 min when on dashboard ─────
+  # Was 30s — refetched the whole workouts table 120 times per
+  # browser-hour for a list that rarely changes. 2 min keeps
+  # cross-device sync (finish a session on your phone, see it on
+  # your laptop) without hammering Supabase.
+  autoInvalidate <- reactiveTimer(120000)
   observe({
     autoInvalidate()
     if (!is.null(rv$token) && rv$page == "dashboard" && !is.null(rv$program)) {
