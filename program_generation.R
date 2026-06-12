@@ -358,6 +358,33 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
         .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
         .iso_slot(c("spinal_flexion"), "Core", c("core"), superset_group = "B")
       ),
+      "upper_lower_3_1" = list(  # LOWER
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .backoff_slot(c("squat"), "Squat Back-off", goal),
+        .compound_slot(c("hinge"), "Hinge", goal),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"), is_drop = TRUE),
+        .iso_slot(c("knee_extension"), "Leg Extension", c("leg_extension")),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
+        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"),
+                  superset_group = "B")
+      ),
+      "upper_lower_3_2" = list(  # UPPER
+        .heavy_slot(c("horizontal_push"), "Heavy Bench Press", goal),
+        .backoff_slot(c("horizontal_push"), "Press Back-off", goal),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"), superset_group = "A"),
+        .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"), superset_group = "A"),
+        .iso_slot(c("shoulder_abduction"), "Lateral Raise", c("lateral_raise"))
+      ),
+      "upper_lower_3_3" = list(  # FULL BODY balancer
+        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
+        .compound_slot(c("incline_push"), "Incline Press", goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"), superset_group = "A"),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "A")
+      ),
       list()
     ))
   }
@@ -439,6 +466,25 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
         .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
         .iso_slot(c("plantarflexion"), "Calves", c("calves"))
       ),
+      "upper_lower_3_1" = list(  # LOWER
+        .heavy_slot(c("squat"), "Heavy Squat", goal, sets = 5L),
+        .backoff_slot(c("squat"), "Squat Back-off", goal),
+        .compound_slot(c("hinge"), "Hinge", goal),
+        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"))
+      ),
+      "upper_lower_3_2" = list(  # UPPER
+        .heavy_slot(c("horizontal_push"), "Heavy Bench Press", goal, sets = 5L),
+        .backoff_slot(c("horizontal_push"), "Bench Back-off", goal),
+        .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .iso_slot(c("elbow_extension"), "Tricep", c("triceps"))
+      ),
+      "upper_lower_3_3" = list(  # FULL BODY balancer
+        .heavy_slot(c("hinge"), "Heavy Deadlift", goal, sets = 4L),
+        .compound_slot(c("vertical_push"), "Overhead Press", goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
+      ),
       list()
     ))
   }
@@ -506,6 +552,32 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
       "push_pull_legs_3_3" = list(  # Legs (minimal)
         .compound_slot(c("squat"), "Squat", goal, sets = 2L),
         .compound_slot(c("hinge"), "Hinge", goal, sets = 2L),
+        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
+      ),
+      "upper_lower_3_1" = list(  # LOWER (kept light — pull-up goal)
+        .compound_slot(c("squat"), "Squat", goal),
+        .compound_slot(c("hinge"), "Hinge", goal),
+        .compound_slot(c("lunge","squat"), "Single Leg", goal,
+                       categories = "single_leg", sets = 2L),
+        .iso_slot(c("plantarflexion"), "Calves", c("calves"))
+      ),
+      "upper_lower_3_2" = list(  # UPPER (pull-emphasis)
+        .heavy_slot(pull_pattern, "Heavy Vertical Pull", goal),
+        .backoff_slot(pull_pattern, "Vertical Pull Back-off", goal),
+        .compound_slot(c("horizontal_pull"), "Heavy Row", goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .iso_slot(c("elbow_flexion"), "Bicep — wide", c("biceps"),
+                  superset_group = "A"),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"),
+                  superset_group = "A"),
+        .compound_slot(c("horizontal_push"), "Chest Press (Maintenance)",
+                       goal, sets = 2L)
+      ),
+      "upper_lower_3_3" = list(  # FULL BODY balancer
+        .heavy_slot(pull_pattern, "Heavy Vertical Pull", goal),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .compound_slot(c("hinge"), "Hinge (Maintenance)", goal, sets = 2L),
+        .iso_slot(c("elbow_flexion"), "Bicep — chin grip", c("biceps")),
         .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
       ),
       list()
@@ -599,6 +671,35 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
         .iso_slot(c("plantarflexion"), "Calves — seated (soleus)", c("calves"), is_drop = TRUE),
         .iso_slot(c("abduction"), "Hip Abduction", c("glute_accessory"))
       ),
+      "upper_lower_3_1" = list(  # LOWER (running's main lift day)
+        .heavy_slot(c("lunge","squat"), "Heavy Single Leg", goal,
+                    categories = "single_leg"),
+        .compound_slot(c("hinge"), "Hinge / RDL", goal),
+        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
+        .iso_slot(c("knee_flexion"), "Nordic / Eccentric Hamstring", c("leg_curl"),
+                  is_drop = TRUE),
+        .iso_slot(c("plantarflexion"), "Calves — gastroc", c("calves"))
+      ),
+      "upper_lower_3_2" = list(  # UPPER — maintenance, not regression
+        .compound_slot(c("horizontal_push"), "Chest Press (maintenance)", goal,
+                       sets = 2L),
+        .compound_slot(c("horizontal_pull"), "Row", goal),
+        .compound_slot(c("vertical_push"), "Overhead Press (maintenance)", goal,
+                       sets = 2L),
+        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"),
+                  superset_group = "A"),
+        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core", c("core"),
+                  superset_group = "A")
+      ),
+      "upper_lower_3_3" = list(  # FULL BODY — running specific
+        .compound_slot(c("squat","lunge"), "Step-up / Bulgarian Split", goal,
+                       categories = "single_leg"),
+        .compound_slot(c("hinge"), "Single Leg RDL", goal),
+        .compound_slot(c("locomotion"), "Loaded Carry", goal, sets = 2L),
+        .compound_slot(c("horizontal_pull"), "Row (upper maintenance)", goal, sets = 2L),
+        .iso_slot(c("plantarflexion"), "Calves — soleus (seated)", c("calves")),
+        .iso_slot(c("rotation","spinal_flexion"), "Rotational Core", c("core"))
+      ),
       list()
     ))
   }
@@ -659,6 +760,35 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
                        goal, sets = 3L),
         .iso_slot(c("rotation","spinal_flexion"), "Cable Chop / Russian Twist",
                   c("core"))
+      ),
+      "upper_lower_3_1" = list(  # LOWER
+        .heavy_slot(c("squat"), "Heavy Goblet/Front Squat", goal),
+        .compound_slot(c("lunge","squat"), "Reverse Lunge / Step-up", goal,
+                       categories = "single_leg"),
+        .compound_slot(c("hinge"), "Hinge / KB Swing", goal),
+        .compound_slot(c("locomotion"), "Farmer's Carry", goal, sets = 2L),
+        .iso_slot(c("anti_extension","rotation"), "Pallof / Anti-rotation",
+                  c("core"))
+      ),
+      "upper_lower_3_2" = list(  # UPPER
+        .heavy_slot(c("vertical_push"), "Heavy OH / Push Press", goal),
+        .compound_slot(c("horizontal_push"), "Landmine / Single Arm Press", goal),
+        .compound_slot(c("horizontal_pull"), "Single Arm Row", goal),
+        .compound_slot(pull_pattern, "Pulldown / Chin-up", goal),
+        .compound_slot(c("locomotion"), "Suitcase Carry (asymmetric)",
+                       goal, sets = 2L),
+        .iso_slot(c("rotation","spinal_flexion"), "Cable Chop / Russian Twist",
+                  c("core"))
+      ),
+      "upper_lower_3_3" = list(  # FULL BODY
+        .compound_slot(c("squat","lunge"), "Bulgarian Split / Pistol Progression",
+                       goal, categories = "single_leg"),
+        .compound_slot(c("hinge"), "Single Leg RDL", goal),
+        .compound_slot(c("incline_push","horizontal_push"), "Push-up / Landmine Press",
+                       goal),
+        .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .compound_slot(c("locomotion"), "Trap Bar / Sled Carry", goal, sets = 2L),
+        .iso_slot(c("anti_extension"), "Dead Bug / Hollow Hold", c("core"))
       ),
       list()
     ))
@@ -907,17 +1037,23 @@ get_split_schedule <- function(split_style, sessions_per_week, goal) {
       n_sessions = 4L
     ),
     "upper_lower_2" = list(
-      labels = c("Upper", "Lower"),
+      # At 2x/week, "upper/lower" is really two full-body sessions
+      # biased toward one half — strict halves leave too much volume
+      # on the table when each muscle only gets one direct hit.
+      labels = c("Lower Focus", "Upper Focus"),
       n_sessions = 2L
     ),
     "upper_lower_3" = list(
-      labels = c("Upper", "Lower", "Upper"),
+      # 3x can't divide evenly into upper/lower — third day is a full
+      # body session so the user gets a balanced week instead of two
+      # upper days carrying lopsided volume.
+      labels = c("Lower", "Upper", "Full Body"),
       n_sessions = 3L
     ),
     "push_pull_legs_2" = list(
       # PPL only makes sense at 3+ sessions; at 2x/wk we run two full body
       # sessions instead so the user still gets balanced volume.
-      labels = c("Full Body (Lower Focus)", "Full Body (Upper Focus)"),
+      labels = c("Lower Focus", "Upper Focus"),
       n_sessions = 2L
     ),
     NULL
