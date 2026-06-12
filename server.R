@@ -360,8 +360,7 @@ server <- function(input, output, session) {
             pullup_baseline   = as.integer(rv$ob_pullup_baseline %||% 0L),
             equipment         = rv$ob_equipment,
             block_number      = 1L,
-            start_date        = Sys.Date(),
-            display_name      = rv$ob_name
+            start_date        = Sys.Date()
           )
           
           setProgress(0.9, detail = "Wrapping up...")

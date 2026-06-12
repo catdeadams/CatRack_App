@@ -507,8 +507,7 @@ setup_profile_server <- function(input, output, session, rv) {
             pullup_baseline   = existing_pu,
             equipment         = new_equip,
             block_number      = as.integer(rv$program$block_number %||% 1L),
-            start_date        = Sys.Date(),
-            display_name      = rv$profile$display_name
+            start_date        = Sys.Date()
           )
 
           setProgress(0.9)

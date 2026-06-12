@@ -949,8 +949,7 @@ generate_program <- function(
     equipment        = NULL,
     block_number     = 1L,
     start_date       = Sys.Date(),
-    program_name     = NULL,
-    display_name     = NULL
+    program_name     = NULL
 ) {
   cat("\n=== CaTrack Program Generator (v2 — Nippard framework) ===\n")
   cat(sprintf("User:       %s\n", user_id))
@@ -981,12 +980,20 @@ generate_program <- function(
   schedule  <- get_split_schedule(split_style, sessions_per_week, goal)
 
   # ── Program record ───────────────────────────────────────
-  # Default name uses the user's display name if available, falling
-  # back to a goal/split label when missing.
+  # Default name is "<display_name>'s Block N — Goal". We always
+  # read the display name fresh from the user's profile so callers
+  # don't have to pass it. Falls back to goal/split label if no
+  # profile name exists yet.
   if (is.null(program_name)) {
     goal_label <- tools::toTitleCase(gsub("_", " ", goal))
-    nm <- tryCatch(trimws(as.character(display_name %||% "")), error = \(e) "")
-    if (nchar(nm) > 0) {
+    nm <- tryCatch({
+      prof <- sb_get("user_profiles",
+                     paste0("?id=eq.", user_id, "&select=display_name"))
+      if (!is.null(prof) && nrow(prof) > 0)
+        trimws(as.character(prof$display_name[[1]] %||% ""))
+      else ""
+    }, error = \(e) "")
+    if (nchar(nm) > 0 && nm != "NA") {
       # Strip trailing apostrophe-s if the user's name already ends in 's
       possessive <- if (substr(nm, nchar(nm), nchar(nm)) %in% c("s", "S"))
                       paste0(nm, "'") else paste0(nm, "'s")
