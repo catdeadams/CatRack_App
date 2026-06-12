@@ -164,10 +164,10 @@ rir_to_rpe <- function(rir) max(5, min(10, 10 - rir))
 }
 
 # Heavy main lift: rep ranges shift by goal
-.heavy_slot <- function(patterns, label, goal, sets = 3L) {
+.heavy_slot <- function(patterns, label, goal, sets = 3L, categories = NULL) {
   rl <- if (goal == "strength")  3L else 5L
   rh <- if (goal == "strength")  5L else 8L
-  .make_slot("heavy", patterns, NULL, label, sets, rl, rh, 180L)
+  .make_slot("heavy", patterns, categories, label, sets, rl, rh, 180L)
 }
 
 # Back-off using the heavy compound exercise
