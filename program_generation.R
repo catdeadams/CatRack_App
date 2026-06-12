@@ -101,6 +101,10 @@ resolve_weekly_target <- function(goal, difficulty, block_variant,
 
   target <- mav_target * goal_mult * block_mult * week_mult
 
+  # Guard rails: NA/NaN from a missing constant or zero-mult muscle
+  # bubbling into the integer cast would propagate NA_integer_ into
+  # weekly_targets and crash the volume coverage report (`if (NA == 0)`).
+  if (!is.finite(target)) return(0L)
   if (target < base$MV)  target <- base$MV
   if (target > base$MRV) target <- base$MRV
   as.integer(round(target))
@@ -199,12 +203,45 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
 
   # Pull-up baseline branching: for pull_up goal users < 3 strict reps,
   # substitute assisted/eccentric in block A.
-  pull_pattern <- if (goal == "pull_up" && pullup_baseline < 3L &&
+  # `pullup_baseline < 3L` returns NA when baseline is NA, which would
+  # crash the `&&` chain — coerce to 0L when missing.
+  pb <- if (is.null(pullup_baseline) || length(pullup_baseline) == 0 ||
+            is.na(pullup_baseline[[1]])) 0L else as.integer(pullup_baseline)
+  pull_pattern <- if (goal == "pull_up" && pb < 3L &&
                      block_variant == "A")
                     c("vertical_pull")  # exercise scorer will pick lat pulldown
                   else c("vertical_pull")
 
   key <- paste(split_style, sessions_per_week, session_idx, sep = "_")
+
+  # Fallback: many split × frequency × goal × session_idx combinations
+  # don't have a hand-written template (e.g. upper_lower at 3x/wk, PPL
+  # at 2x/wk, running_support + PPL). Returning `list()` would create
+  # an empty workout AND propagate NAs into the weekly volume math.
+  # Resolve recursively to the full_body equivalent so the user always
+  # gets a real program even on under-supported combos.
+  result <- .build_session_inner(goal, split_style, sessions_per_week,
+                                 session_idx, block_variant, week_in_block,
+                                 pull_pattern, key)
+  if (length(result) == 0 && split_style != "full_body") {
+    cat(sprintf("\n  [info] No %s template for %s/%dx/sess %d — falling back to full_body\n",
+                goal, split_style, sessions_per_week, session_idx))
+    fb_sessions <- if (sessions_per_week >= 3L) 3L else 2L
+    fb_idx      <- ((session_idx - 1L) %% fb_sessions) + 1L
+    fb_key      <- paste("full_body", fb_sessions, fb_idx, sep = "_")
+    result <- .build_session_inner(goal, "full_body", fb_sessions,
+                                   fb_idx, block_variant, week_in_block,
+                                   pull_pattern, fb_key)
+  }
+  return(result)
+}
+
+# Helper holding the switch tables. Lives outside build_ideal_session so
+# the wrapper can call it recursively for the fallback path without
+# re-running the pull_pattern / key set-up.
+.build_session_inner <- function(goal, split_style, sessions_per_week,
+                                 session_idx, block_variant, week_in_block,
+                                 pull_pattern, key) {
 
   # ── HYPERTROPHY ──────────────────────────────────────────
   if (goal == "hypertrophy") {
@@ -594,8 +631,12 @@ get_eligible_exercises <- function(user_equipment) {
 
   eligible <- all_ex[vapply(seq_len(nrow(all_ex)), function(i) {
     required <- tryCatch(all_ex$equipment_required[[i]], error = \(e) character(0))
-    if (length(required) == 0 || all(required == "bodyweight")) return(TRUE)
-    all(required %in% c(user_equipment, "bodyweight"))
+    # Strip NAs that come from Supabase JSON arrays so downstream
+    # `all(... == "bodyweight")` can't yield NA and crash the `if`.
+    required <- required[!is.na(required)]
+    if (length(required) == 0) return(TRUE)
+    if (all(required == "bodyweight")) return(TRUE)
+    isTRUE(all(required %in% c(user_equipment, "bodyweight")))
   }, logical(1)), ]
 
   cat(sprintf("  Exercise library: %d total, %d eligible\n",
@@ -628,27 +669,39 @@ score_exercise <- function(exercise, slot, block_variant, used_ids,
   prim <- tryCatch(unlist(exercise$primary_muscles), error = \(e) character(0))
   sec  <- tryCatch(unlist(exercise$secondary_muscles), error = \(e) character(0))
 
-  # Base: 1.0 if compound slot wants compound and this is compound
-  base <- if (slot$prefer_compound) {
+  # Base: 1.0 if compound slot wants compound and this is compound.
+  # isTRUE() wraps `slot$prefer_compound` defensively — if the slot
+  # constructor ever yields NA here, an unwrapped `if(NA)` would crash.
+  base <- if (isTRUE(slot$prefer_compound)) {
     if (isTRUE(exercise$is_compound)) 1.0 else -0.5
   } else {
     if (isTRUE(exercise$is_compound)) 0.2 else 1.0
   }
 
   # Muscle deficit bonus: how much do the muscles this hits need volume?
-  prim_def <- sum(vapply(prim, \(m) muscle_deficit[[m]] %||% 0, numeric(1)))
-  sec_def  <- sum(vapply(sec,  \(m) muscle_deficit[[m]] %||% 0, numeric(1))) * 0.5
+  # Coerce NA deficit (possible if a muscle target collapsed to NA upstream)
+  # to 0 so sum() doesn't propagate NA into the score.
+  safe_def <- function(m) {
+    v <- muscle_deficit[[m]] %||% 0
+    if (is.na(v)) 0 else v
+  }
+  prim_def <- sum(vapply(prim, safe_def, numeric(1)))
+  sec_def  <- sum(vapply(sec,  safe_def, numeric(1))) * 0.5
   muscle_score <- (prim_def + sec_def) / 5.0  # normalize roughly
 
-  # Block equipment preference
+  # Block equipment preference. isTRUE() guards against `any(NA)` -> NA
+  # crashing the `if`, which can happen if eq contains NA entries from
+  # a malformed Supabase array column.
   eq <- tryCatch(unlist(exercise$equipment_required), error = \(e) character(0))
   pref <- BLOCK_EQUIPMENT_PREF[[block_variant]] %||% character(0)
-  block_score <- if (length(pref) > 0 && any(eq %in% pref)) 0.6 else 0
+  block_score <- if (isTRUE(length(pref) > 0 && any(eq %in% pref))) 0.6 else 0
 
   # Pull-up baseline override: for vertical_pull slots in Block A when baseline < 3,
   # prefer lat pulldown / band-assisted variants (downrank "Pull-up" and "Chin-up").
+  pb <- if (is.null(pullup_baseline) || length(pullup_baseline) == 0 ||
+            is.na(pullup_baseline[[1]])) 0L else as.integer(pullup_baseline)
   baseline_score <- 0
-  if (goal == "pull_up" && block_variant == "A" && pullup_baseline < 3L &&
+  if (goal == "pull_up" && block_variant == "A" && pb < 3L &&
       isTRUE(exercise$movement_pattern == "vertical_pull")) {
     nm <- tolower(as.character(exercise$name %||% ""))
     if (grepl("pulldown", nm))               baseline_score <- 1.5
@@ -791,7 +844,7 @@ instantiate_session <- function(slots, exercises, goal, difficulty,
 # 8. SPLIT SCHEDULE (labels + count)
 # ============================================================
 get_split_schedule <- function(split_style, sessions_per_week, goal) {
-  switch(paste(split_style, sessions_per_week, sep = "_"),
+  result <- switch(paste(split_style, sessions_per_week, sep = "_"),
     "full_body_3" = list(
       labels = c("Full Body A", "Full Body B", "Full Body C"),
       n_sessions = 3L
@@ -812,10 +865,28 @@ get_split_schedule <- function(split_style, sessions_per_week, goal) {
       labels = c("Upper", "Lower"),
       n_sessions = 2L
     ),
-    # Fallback
-    list(labels = c("Full Body A", "Full Body B", "Full Body C"),
-         n_sessions = 3L)
+    "upper_lower_3" = list(
+      labels = c("Upper", "Lower", "Upper"),
+      n_sessions = 3L
+    ),
+    "push_pull_legs_2" = list(
+      # PPL only makes sense at 3+ sessions; at 2x/wk we run two full body
+      # sessions instead so the user still gets balanced volume.
+      labels = c("Full Body (Lower Focus)", "Full Body (Upper Focus)"),
+      n_sessions = 2L
+    ),
+    NULL
   )
+
+  # Final fallback — always honour the user's sessions_per_week
+  # so day_offset indexing can't run off the end into NA dates.
+  if (is.null(result)) {
+    spw <- as.integer(sessions_per_week)
+    if (is.na(spw) || spw < 1L) spw <- 3L
+    labels <- c("Full Body A", "Full Body B", "Full Body C", "Full Body D")[seq_len(min(spw, 4L))]
+    result <- list(labels = labels, n_sessions = length(labels))
+  }
+  result
 }
 
 # ============================================================
@@ -975,10 +1046,12 @@ generate_program <- function(
     if (week_in_block == 2) {
       cat(sprintf("\n      Week %d volume coverage:", week))
       for (m in names(week_targets)) {
-        if (week_targets[[m]] == 0) next
+        tgt <- week_targets[[m]]
+        if (is.null(tgt) || is.na(tgt) || tgt == 0) next
         got <- sets_scheduled[[m]] %||% 0
-        marker <- if (got >= week_targets[[m]]) "✓" else
-                  if (got >= week_targets[[m]] * 0.7) "~" else "!"
+        if (is.na(got)) got <- 0
+        marker <- if (got >= tgt) "✓" else
+                  if (got >= tgt * 0.7) "~" else "!"
         cat(sprintf(" %s%s %d/%d", marker, m, got, week_targets[[m]]))
       }
     }
