@@ -383,18 +383,14 @@ setup_program_server <- function(input, output, session, rv) {
       showNotification("Name cannot be empty.", type = "warning"); return()
     }
 
-    # Try the user-override column first; fall back to overwriting
-    # `name` if the deployment's schema doesn't have `custom_name`.
+    # Always update `name` — the dashboard and profile read
+    # rv$program$name directly, and the program_summary view shown on
+    # the Programs tab coalesces over `name` too. Writing only to
+    # custom_name left the other surfaces showing the stale value.
     resp <- sb_update("programs",
       sprintf("?id=eq.%s", pid),
-      list(custom_name = new_name),
+      list(name = new_name),
       token = rv$token)
-    if (!(resp$status_code %in% c(200, 201, 204))) {
-      resp <- sb_update("programs",
-        sprintf("?id=eq.%s", pid),
-        list(name = new_name),
-        token = rv$token)
-    }
 
     if (resp$status_code %in% c(200, 201, 204)) {
       # Refresh program data
