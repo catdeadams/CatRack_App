@@ -445,18 +445,21 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
 
   # ── PULL-UP FOCUS ────────────────────────────────────────
   if (goal == "pull_up") {
-    # Pulling emphasis across every session; minimal lower body
+    # Pulling emphasis on every session, with light lower-body work
+    # so full-body splits don't turn into upper-only programs.
     return(switch(key,
       "full_body_3_1" = list(
         .heavy_slot(pull_pattern, "Heavy Vertical Pull", goal),
         .backoff_slot(pull_pattern, "Vertical Pull Back-off", goal),
         .compound_slot(c("horizontal_pull"), "Horizontal Row", goal),
+        .compound_slot(c("squat"), "Squat (Maintenance)", goal, sets = 2L),
         .iso_slot(c("elbow_flexion"), "Bicep — wide grip", c("biceps")),
         .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"))
       ),
       "full_body_3_2" = list(
         .heavy_slot(c("horizontal_pull"), "Heavy Row", goal),
         .compound_slot(pull_pattern, "Vertical Pull Variation", goal),
+        .compound_slot(c("hinge"), "Hinge (Maintenance)", goal, sets = 2L),
         .compound_slot(c("horizontal_push"), "Chest Press (Maintenance)", goal, sets = 2L),
         .iso_slot(c("elbow_flexion"), "Bicep — chin grip", c("biceps")),
         .iso_slot(c("spinal_flexion"), "Core", c("core"))
@@ -464,6 +467,8 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
       "full_body_3_3" = list(
         .heavy_slot(pull_pattern, "Heavy Vertical Pull", goal),
         .compound_slot(c("horizontal_pull"), "Row Variation", goal),
+        .compound_slot(c("lunge","squat"), "Single Leg (Maintenance)", goal,
+                       categories = "single_leg", sets = 2L),
         .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"), superset_group = "A"),
         .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"), superset_group = "A"),
         .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
@@ -471,6 +476,7 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
       "full_body_2_1" = list(
         .heavy_slot(pull_pattern, "Heavy Vertical Pull", goal),
         .compound_slot(c("horizontal_pull"), "Row", goal),
+        .compound_slot(c("squat"), "Squat (Maintenance)", goal, sets = 2L),
         .compound_slot(c("horizontal_push"), "Chest Press (Maintenance)", goal, sets = 2L),
         .iso_slot(c("elbow_flexion"), "Bicep", c("biceps")),
         .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"))
@@ -478,6 +484,7 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
       "full_body_2_2" = list(
         .heavy_slot(c("horizontal_pull"), "Heavy Row", goal),
         .compound_slot(pull_pattern, "Vertical Pull", goal),
+        .compound_slot(c("hinge"), "Hinge (Maintenance)", goal, sets = 2L),
         .iso_slot(c("elbow_flexion"), "Bicep", c("biceps"), superset_group = "A"),
         .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"), superset_group = "A"),
         .iso_slot(c("spinal_flexion"), "Core", c("core"))
@@ -506,46 +513,65 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
   }
 
   # ── RUNNING SUPPORT ──────────────────────────────────────
+  # Heavy single-leg emphasis (each leg trains independently to mimic
+  # running's unilateral load), eccentric hamstring work (Nordic-style
+  # — biggest documented hamstring-injury reducer for runners), split
+  # calf work (gastroc + soleus), and anti-rotation core. Direct
+  # bilateral squat work kept modest so heavy training doesn't compete
+  # with run mileage for recovery.
   if (goal == "running_support") {
     return(switch(key,
-      "full_body_3_1" = list(
-        .heavy_slot(c("squat"), "Heavy Squat", goal),
-        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
-        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl")),
-        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
-        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"), superset_group = "B")
+      "full_body_3_1" = list(  # Quad-dominant single-leg day
+        .heavy_slot(c("lunge","squat"), "Heavy Single Leg", goal,
+                    categories = "single_leg"),
+        .compound_slot(c("squat"), "Squat Variation", goal, sets = 2L),
+        .iso_slot(c("knee_flexion"), "Nordic / Eccentric Hamstring", c("leg_curl")),
+        .iso_slot(c("plantarflexion"), "Calves — standing (gastroc)", c("calves"),
+                  superset_group = "B"),
+        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core",
+                  c("core"), superset_group = "B")
       ),
-      "full_body_3_2" = list(
-        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
+      "full_body_3_2" = list(  # Posterior chain + hip stability
+        .heavy_slot(c("hinge"), "Heavy Hinge / RDL", goal),
         .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
-        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
-        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl"), is_drop = TRUE),
+        .compound_slot(c("abduction"), "Hip Abduction (band/cable)", goal,
+                       categories = "glute_accessory"),
+        .iso_slot(c("knee_flexion"), "Nordic / Eccentric Hamstring",
+                  c("leg_curl"), is_drop = TRUE),
         .iso_slot(c("plantarflexion"), "Calves — seated (soleus)", c("calves")),
-        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core", c("core"))
+        .iso_slot(c("anti_extension"), "Dead Bug / Pallof", c("core"))
       ),
-      "full_body_3_3" = list(
-        .compound_slot(c("squat","lunge"), "Single Leg Squat", goal, categories = "single_leg"),
-        .compound_slot(c("hinge"), "Hinge Variation", goal),
-        .compound_slot(c("abduction"), "Hip Abduction", goal, categories = "glute_accessory"),
-        .iso_slot(c("plantarflexion"), "Calves — standing", c("calves"), is_drop = TRUE),
-        .iso_slot(c("spinal_flexion"), "Core", c("core")),
+      "full_body_3_3" = list(  # Plyo + balance + upper maintenance
+        .compound_slot(c("squat","lunge"), "Step-up / Bulgarian Split", goal,
+                       categories = "single_leg"),
+        .compound_slot(c("hinge"), "Single Leg RDL", goal),
+        .compound_slot(c("locomotion"), "Loaded Carry", goal, sets = 2L),
+        .iso_slot(c("plantarflexion"), "Calves — standing (gastroc)", c("calves"),
+                  is_drop = TRUE),
+        .iso_slot(c("rotation","spinal_flexion"), "Rotational Core", c("core")),
         .compound_slot(c("horizontal_pull"), "Row (upper maintenance)", goal, sets = 2L)
       ),
       "full_body_2_1" = list(
-        .heavy_slot(c("squat"), "Heavy Squat", goal),
-        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
-        .compound_slot(c("hinge"), "Hinge", goal),
-        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl")),
-        .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B"),
-        .iso_slot(c("spinal_flexion"), "Core", c("core"), superset_group = "B")
+        .heavy_slot(c("lunge","squat"), "Heavy Single Leg", goal,
+                    categories = "single_leg"),
+        .compound_slot(c("hinge"), "Hinge / RDL", goal),
+        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
+        .iso_slot(c("knee_flexion"), "Nordic / Eccentric Hamstring", c("leg_curl")),
+        .iso_slot(c("plantarflexion"), "Calves — gastroc", c("calves"),
+                  superset_group = "B"),
+        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core",
+                  c("core"), superset_group = "B")
       ),
       "full_body_2_2" = list(
-        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
-        .compound_slot(c("squat","lunge"), "Squat/Lunge", goal, categories = "single_leg"),
-        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
-        .iso_slot(c("plantarflexion"), "Calves — seated", c("calves"), is_drop = TRUE),
-        .iso_slot(c("anti_extension"), "Anti-extension Core", c("core")),
-        .iso_slot(c("abduction"), "Hip Abduction", c("glute_accessory"))
+        .heavy_slot(c("hinge"), "Heavy Hinge / Deadlift", goal),
+        .compound_slot(c("squat","lunge"), "Step-up / Bulgarian Split", goal,
+                       categories = "single_leg"),
+        .compound_slot(c("abduction"), "Hip Abduction", goal,
+                       categories = "glute_accessory"),
+        .compound_slot(c("locomotion"), "Loaded Carry", goal, sets = 2L),
+        .iso_slot(c("plantarflexion"), "Calves — seated (soleus)", c("calves"),
+                  is_drop = TRUE),
+        .iso_slot(c("anti_extension"), "Dead Bug / Plank", c("core"))
       ),
       "upper_lower_4_1" = list(
         .compound_slot(c("horizontal_push"), "Chest Press (maint)", goal, sets = 2L),
@@ -578,42 +604,61 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
   }
 
   # ── FUNCTIONAL ───────────────────────────────────────────
+  # Heavy carries on every session (single biggest "real world"
+  # transfer), unilateral pressing/pulling (asymmetric load = trunk
+  # work without dedicated abs), rotational/anti-rotation core every
+  # day, KB/explosive work where equipment allows. Direct arm
+  # isolation is intentionally pulled back so the time goes to
+  # patterns that show up outside the gym.
   if (goal == "functional") {
     return(switch(key,
-      "full_body_3_1" = list(
-        .heavy_slot(c("squat"), "Heavy Squat", goal),
-        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
-        .compound_slot(c("horizontal_push"), "Push", goal),
-        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core", c("core")),
-        .iso_slot(c("plantarflexion"), "Calves", c("calves"))
+      "full_body_3_1" = list(  # Squat + push + carry
+        .heavy_slot(c("squat"), "Heavy Goblet/Front Squat", goal),
+        .compound_slot(c("lunge","squat"), "Reverse Lunge / Step-up",
+                       goal, categories = "single_leg"),
+        .compound_slot(c("vertical_push"), "Single Arm OH Press", goal),
+        .compound_slot(c("locomotion"), "Farmer's / Suitcase Carry",
+                       goal, sets = 3L),
+        .iso_slot(c("anti_extension","rotation"), "Pallof / Anti-rotation",
+                  c("core"))
       ),
-      "full_body_3_2" = list(
-        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
-        .compound_slot(c("horizontal_pull"), "Row", goal),
-        .compound_slot(c("vertical_push"), "Overhead Press", goal),
-        .iso_slot(c("spinal_flexion","rotation"), "Core", c("core"), superset_group = "B"),
+      "full_body_3_2" = list(  # Hinge + pull + rotational
+        .heavy_slot(c("hinge"), "Heavy Hinge / KB Swing", goal),
+        .compound_slot(c("horizontal_pull"), "Single Arm Row", goal),
+        .compound_slot(c("vertical_push"), "Push Press / OH Press", goal),
+        .compound_slot(c("locomotion"), "Suitcase Carry (asymmetric)",
+                       goal, sets = 2L),
+        .iso_slot(c("rotation","spinal_flexion"), "Russian Twist / Cable Chop",
+                  c("core"), superset_group = "B"),
         .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B")
       ),
-      "full_body_3_3" = list(
-        .compound_slot(c("squat","lunge"), "Single Leg Squat", goal, categories = "single_leg"),
-        .compound_slot(pull_pattern, "Vertical Pull", goal),
-        .compound_slot(c("incline_push","horizontal_push"), "Push Variation", goal),
-        .compound_slot(c("locomotion"), "Carry / Sled (if available)", goal, sets = 3L),
-        .iso_slot(c("anti_extension"), "Anti-extension Core", c("core"))
+      "full_body_3_3" = list(  # Single-leg + multi-planar + carry
+        .compound_slot(c("squat","lunge"), "Bulgarian Split / Pistol Progression",
+                       goal, categories = "single_leg"),
+        .compound_slot(pull_pattern, "Vertical Pull (chin/pulldown)", goal),
+        .compound_slot(c("incline_push","horizontal_push"), "Landmine Press / Push-up",
+                       goal),
+        .compound_slot(c("locomotion"), "Trap Bar / Sled Carry", goal, sets = 3L),
+        .iso_slot(c("anti_extension"), "Dead Bug / Hollow Hold", c("core"))
       ),
       "full_body_2_1" = list(
-        .heavy_slot(c("squat"), "Heavy Squat", goal),
-        .compound_slot(c("horizontal_pull"), "Row", goal),
-        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
-        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core", c("core"), superset_group = "B"),
+        .heavy_slot(c("squat"), "Heavy Goblet/Front Squat", goal),
+        .compound_slot(c("horizontal_pull"), "Single Arm Row", goal),
+        .compound_slot(c("lunge","squat"), "Reverse Lunge / Step-up",
+                       goal, categories = "single_leg"),
+        .compound_slot(c("locomotion"), "Farmer's Carry", goal, sets = 3L),
+        .iso_slot(c("anti_extension","rotation"), "Pallof / Anti-rotation",
+                  c("core"), superset_group = "B"),
         .iso_slot(c("plantarflexion"), "Calves", c("calves"), superset_group = "B")
       ),
       "full_body_2_2" = list(
-        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
-        .compound_slot(c("horizontal_push"), "Push", goal),
-        .compound_slot(pull_pattern, "Vertical Pull", goal),
-        .compound_slot(c("locomotion"), "Carry / Sled", goal, sets = 2L),
-        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
+        .heavy_slot(c("hinge"), "Heavy Hinge / KB Swing", goal),
+        .compound_slot(c("horizontal_push"), "Landmine Press / Push-up", goal),
+        .compound_slot(pull_pattern, "Pulldown / Chin-up", goal),
+        .compound_slot(c("locomotion"), "Suitcase Carry (asymmetric)",
+                       goal, sets = 3L),
+        .iso_slot(c("rotation","spinal_flexion"), "Cable Chop / Russian Twist",
+                  c("core"))
       ),
       list()
     ))
@@ -904,7 +949,8 @@ generate_program <- function(
     equipment        = NULL,
     block_number     = 1L,
     start_date       = Sys.Date(),
-    program_name     = NULL
+    program_name     = NULL,
+    display_name     = NULL
 ) {
   cat("\n=== CaTrack Program Generator (v2 — Nippard framework) ===\n")
   cat(sprintf("User:       %s\n", user_id))
@@ -935,10 +981,21 @@ generate_program <- function(
   schedule  <- get_split_schedule(split_style, sessions_per_week, goal)
 
   # ── Program record ───────────────────────────────────────
+  # Default name uses the user's display name if available, falling
+  # back to a goal/split label when missing.
   if (is.null(program_name)) {
-    goal_label  <- tools::toTitleCase(gsub("_", " ", goal))
-    split_label <- tools::toTitleCase(gsub("_", " ", split_style))
-    program_name <- sprintf("%s %s — Block %d", goal_label, split_label, block_number)
+    goal_label <- tools::toTitleCase(gsub("_", " ", goal))
+    nm <- tryCatch(trimws(as.character(display_name %||% "")), error = \(e) "")
+    if (nchar(nm) > 0) {
+      # Strip trailing apostrophe-s if the user's name already ends in 's
+      possessive <- if (substr(nm, nchar(nm), nchar(nm)) %in% c("s", "S"))
+                      paste0(nm, "'") else paste0(nm, "'s")
+      program_name <- sprintf("%s Block %d — %s",
+                              possessive, block_number, goal_label)
+    } else {
+      split_label  <- tools::toTitleCase(gsub("_", " ", split_style))
+      program_name <- sprintf("%s %s — Block %d", goal_label, split_label, block_number)
+    }
   }
 
   program_row <- list(
@@ -960,7 +1017,45 @@ generate_program <- function(
   if (is.null(program_id)) stop("Failed to create program record")
   cat(sprintf("\nProgram created: %s\n", program_id))
 
+  # Anything past this point that throws would leave a stub program row
+  # with no workouts attached. Wrap the generation loop so we delete the
+  # orphan record on failure instead of leaving it for the user.
   total_sessions <- 0L; total_exercises <- 0L
+  cleanup_on_fail <- function(e) {
+    cat(sprintf("\n  ERROR during generation: %s\n", conditionMessage(e)))
+    cat("  Rolling back partial program...\n")
+    tryCatch({
+      # Best-effort cascade — orphaned set_logs / exercises shouldn't
+      # happen since we delete before any logs can be written, but be
+      # thorough in case the user retries quickly.
+      wkts <- sb_get("workouts",
+                     paste0("?program_id=eq.", program_id, "&select=id"))
+      if (!is.null(wkts) && nrow(wkts) > 0) {
+        wid_list <- paste0("(", paste(wkts$id, collapse = ","), ")")
+        request(paste0(SUPABASE_URL, "/rest/v1/workout_exercises?workout_id=in.", wid_list)) |>
+          req_headers("apikey" = SUPABASE_SERVICE_KEY,
+                      "Authorization" = paste("Bearer", SUPABASE_SERVICE_KEY)) |>
+          req_method("DELETE") |>
+          req_error(is_error = \(r) FALSE) |>
+          req_perform()
+        request(paste0(SUPABASE_URL, "/rest/v1/workouts?program_id=eq.", program_id)) |>
+          req_headers("apikey" = SUPABASE_SERVICE_KEY,
+                      "Authorization" = paste("Bearer", SUPABASE_SERVICE_KEY)) |>
+          req_method("DELETE") |>
+          req_error(is_error = \(r) FALSE) |>
+          req_perform()
+      }
+      request(paste0(SUPABASE_URL, "/rest/v1/programs?id=eq.", program_id)) |>
+        req_headers("apikey" = SUPABASE_SERVICE_KEY,
+                    "Authorization" = paste("Bearer", SUPABASE_SERVICE_KEY)) |>
+        req_method("DELETE") |>
+        req_error(is_error = \(r) FALSE) |>
+        req_perform()
+    }, error = \(ce) cat(sprintf("  Cleanup also failed: %s\n", conditionMessage(ce))))
+    stop(conditionMessage(e), call. = FALSE)
+  }
+
+  tryCatch({
 
   for (week in 1:12) {
     block_variant <- c("A","B","C")[ceiling(week / 4)]
@@ -1057,13 +1152,18 @@ generate_program <- function(
     }
   }
 
+  }, error = cleanup_on_fail)
+  # end tryCatch wrapping the per-week generation loop
+
   cat("\n\nDone!\n")
   cat(sprintf("  Program ID:  %s\n", program_id))
   cat(sprintf("  Sessions:    %d\n", total_sessions))
   cat(sprintf("  Exercises:   %d prescriptions written\n", total_exercises))
 
   cat("\n── Week 1 Preview ──────────────────────────────────\n")
-  preview_program(program_id, week = 1)
+  tryCatch(preview_program(program_id, week = 1),
+           error = \(e) cat(sprintf("Preview error (non-fatal): %s\n",
+                                    conditionMessage(e))))
 
   invisible(program_id)
 }

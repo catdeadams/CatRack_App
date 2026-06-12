@@ -47,11 +47,13 @@ GOAL_VOLUME_MULTIPLIERS <- list(
     biceps = 0.5, triceps = 0.5, calves = 0.5, core = 0.6
   ),
   pull_up = list(
-    # Pulling emphasis; rest at maintenance
-    quads = 0.0, hamstrings = 0.0, glutes = 0.0, chest = 0.4,
+    # Pulling emphasis, but lower body still gets maintenance work —
+    # entirely cutting legs caused the "no lower body" complaint and
+    # leaves real strength on the table for full-body splits.
+    quads = 0.35, hamstrings = 0.35, glutes = 0.35, chest = 0.4,
     lats = 1.4, mid_back = 1.3, front_delts = 0.0,
     mid_delts = 0.3, rear_delts = 1.2, biceps = 1.2, triceps = 0.3,
-    calves = 0.0, core = 0.8
+    calves = 0.3, core = 0.8
   ),
   running_support = list(
     # Lower body + posterior chain + core; upper body maintenance

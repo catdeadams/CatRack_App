@@ -360,7 +360,8 @@ server <- function(input, output, session) {
             pullup_baseline   = as.integer(rv$ob_pullup_baseline %||% 0L),
             equipment         = rv$ob_equipment,
             block_number      = 1L,
-            start_date        = Sys.Date()
+            start_date        = Sys.Date(),
+            display_name      = rv$ob_name
           )
           
           setProgress(0.9, detail = "Wrapping up...")
@@ -376,9 +377,13 @@ server <- function(input, output, session) {
           
         }, error = function(e) {
           rv$ob_generating <- FALSE
+          # generate_program() now rolls back its partial program record
+          # before re-throwing, so the user is safe to retry without
+          # leaving orphan rows behind.
           showNotification(
-            paste("Error generating program:", conditionMessage(e)),
-            type = "error", duration = 8)
+            paste("Error generating program:", conditionMessage(e),
+                  "— please try again. If the issue persists, change goal/split and retry."),
+            type = "error", duration = 10)
         })
       })
     }
@@ -418,9 +423,12 @@ server <- function(input, output, session) {
     
     # ── Login / Signup ──
     if (page == "login") {
-      return(login_page_ui(mode = rv$auth_mode))
+      return(tagList(
+        login_page_ui(mode = rv$auth_mode),
+        if (isTRUE(rv$show_methodology)) methodology_modal_ui()
+      ))
     }
-    
+
     # ── Onboarding ──
     if (page == "onboarding") {
       ob_values <- list(
@@ -433,7 +441,13 @@ server <- function(input, output, session) {
         equipment        = rv$ob_equipment,
         display_name     = rv$ob_name
       )
-      return(onboarding_page_ui(step = rv$ob_step, values = ob_values))
+      # Render the methodology modal here too — the early `return`
+      # above used to skip the global modal mount, so the "How is
+      # this built?" link on step 5 did nothing pre-auth.
+      return(tagList(
+        onboarding_page_ui(step = rv$ob_step, values = ob_values),
+        if (isTRUE(rv$show_methodology)) methodology_modal_ui()
+      ))
     }
     
     # ── Authenticated pages (with bottom nav) ──
@@ -599,6 +613,20 @@ server <- function(input, output, session) {
     ))
   })
   
+  # Holds the last-page hint sent by the browser before login completes.
+  # Applied AFTER load_user_data() so we route to the user's prior view.
+  pending_last_view <- reactiveVal(NULL)
+
+  observeEvent(input$restore_last_view, {
+    parsed <- tryCatch(jsonlite::fromJSON(input$restore_last_view),
+                       error = \(e) NULL)
+    if (is.null(parsed)) return()
+    pending_last_view(list(
+      page       = as.character(parsed$page       %||% ""),
+      workout_id = as.character(parsed$workout_id %||% "")
+    ))
+  })
+
   # ── Session restore from localStorage refresh token ────────
   observeEvent(input$restore_session_refresh, {
     req(!is.null(input$restore_session_refresh), nchar(input$restore_session_refresh) > 0)
@@ -618,9 +646,42 @@ server <- function(input, output, session) {
           email         = rv$user_email %||% ""
         ))
         load_user_data()
+
+        # Route back to the last-active view if we have one. Workouts
+        # take precedence — if the user was mid-session, drop them back
+        # into it via the existing start_from_preview observer.
+        view <- pending_last_view()
+        if (!is.null(view)) {
+          if (nchar(view$workout_id) > 0) {
+            session$sendCustomMessage("trigger_input",
+              list(name = "start_from_preview", value = view$workout_id))
+          } else if (nchar(view$page) > 0 &&
+                     view$page %in% c("dashboard","progress","friends","profile",
+                                      "programs","preview","summary")) {
+            rv$page    <- view$page
+            rv$nav_tab <- if (view$page %in% c("dashboard","progress","friends","profile"))
+                            view$page else "dashboard"
+          }
+          pending_last_view(NULL)
+        }
       }
     }
     # If refresh fails, stay on login page — localStorage cleared by user on next explicit login
+  })
+
+  # Persist current page + active workout id so a disconnect during a
+  # workout returns the user to that session, not the dashboard.
+  observe({
+    page <- rv$page
+    wid  <- rv$active_workout_id
+    # Don't persist pre-auth pages
+    if (is.null(page) || page %in% c("login","onboarding","password_reset")) {
+      session$sendCustomMessage("save_last_view",
+        list(page = "", workout_id = ""))
+    } else {
+      session$sendCustomMessage("save_last_view",
+        list(page = page, workout_id = wid %||% ""))
+    }
   })
 
   # ── Logout ─────────────────────────────────────────────────

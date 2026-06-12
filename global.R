@@ -346,11 +346,21 @@ login_page_ui <- function(mode = "login") {
         // ── localStorage session restore ──────────────────────────
         // Saves/restores the Supabase refresh token so the user
         // stays logged in after screen timeout or browser reload.
+        // Also restores the current page + active workout so a
+        // disconnect mid-session returns you to your session, not
+        // back to the dashboard.
         function tryRestore() {
           if (!window.Shiny) { setTimeout(tryRestore, 150); return; }
           var rt = localStorage.getItem("catrack_refresh_token");
           if (rt && rt.length > 10) {
             Shiny.setInputValue("restore_session_refresh", rt, {priority:"event"});
+          }
+          var lastPage = localStorage.getItem("catrack_last_page");
+          var lastWo   = localStorage.getItem("catrack_last_workout_id");
+          if (lastPage || lastWo) {
+            Shiny.setInputValue("restore_last_view",
+              JSON.stringify({page: lastPage || "", workout_id: lastWo || ""}),
+              {priority:"event"});
           }
         }
         tryRestore();
@@ -365,7 +375,57 @@ login_page_ui <- function(mode = "login") {
           Shiny.addCustomMessageHandler("clear_auth_session", function(msg) {
             localStorage.removeItem("catrack_refresh_token");
             localStorage.removeItem("catrack_email");
+            localStorage.removeItem("catrack_last_page");
+            localStorage.removeItem("catrack_last_workout_id");
           });
+          Shiny.addCustomMessageHandler("save_last_view", function(msg) {
+            if (msg.page)        localStorage.setItem("catrack_last_page",        msg.page);
+            else                 localStorage.removeItem("catrack_last_page");
+            if (msg.workout_id)  localStorage.setItem("catrack_last_workout_id",  msg.workout_id);
+            else                 localStorage.removeItem("catrack_last_workout_id");
+          });
+          // Server-driven input trigger — used to deep-link the user
+          // back into an in-progress workout after a session restore.
+          Shiny.addCustomMessageHandler("trigger_input", function(msg) {
+            if (!msg || !msg.name) return;
+            Shiny.setInputValue(msg.name, msg.value, {priority:"event"});
+          });
+        }
+
+        // ── Offline / disconnect banner ──────────────────────────
+        // Shown when the browser loses network OR Shiny disconnects
+        // from the R server. Without this the app silently freezes
+        // and the user has no signal that anything is wrong.
+        if (!document.getElementById("catrack-offline-banner")) {
+          var banner = document.createElement("div");
+          banner.id = "catrack-offline-banner";
+          banner.style.cssText = "position:fixed;top:0;left:0;right:0;" +
+            "background:#854F0B;color:#ffe9c0;padding:8px 12px;" +
+            "font-size:12px;text-align:center;z-index:9999;" +
+            "display:none;font-family:system-ui,sans-serif;" +
+            "box-shadow:0 2px 8px rgba(0,0,0,0.4);";
+          banner.innerText = "⚠  You are offline — changes will sync when reconnected.";
+          document.body && document.body.appendChild(banner);
+
+          function showBanner(msg) {
+            if (!banner) return;
+            if (msg) banner.innerText = msg;
+            banner.style.display = "block";
+          }
+          function hideBanner() {
+            if (banner) banner.style.display = "none";
+          }
+          window.addEventListener("online",  hideBanner);
+          window.addEventListener("offline", function() {
+            showBanner("⚠  You are offline — changes will sync when reconnected.");
+          });
+          // Shiny dispatches `shiny:disconnected` when the websocket
+          // drops (server restart, idle timeout, etc).
+          document.addEventListener("shiny:disconnected", function() {
+            showBanner("⚠  Disconnected from server — refresh to reconnect.");
+          });
+          document.addEventListener("shiny:connected", hideBanner);
+          if (!navigator.onLine) showBanner();
         }
 
         // ── Supabase password recovery from URL hash ──────────────

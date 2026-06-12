@@ -598,9 +598,11 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                         div()
                     ),
 
-                    # Set rows
+                    # Set rows — each set has its own notes input below it
+                    # so notes are *per-set*, not shared across the exercise.
                     lapply(seq_len(we$prescribed_sets), function(s) {
                       set_key   <- paste0(we$id, "_s", s)
+                      note_key  <- paste0("note_", we$id, "_s", s)
                       log_entry <- if (s <= length(we_logs)) we_logs[[s]] else NULL
                       # editing=TRUE re-opens a previously logged set for correction —
                       # the green ✓ button toggles this on, log_set toggles it off.
@@ -608,6 +610,16 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                       is_logged <- !is.null(log_entry) && !is_editing
                       is_drop   <- !is.null(we$set_type) && !is.na(we$set_type) &&
                                    we$set_type == "drop_set" && s == we$prescribed_sets
+
+                      # Per-set note: defaults to that set's saved note (or the
+                      # most recent set's note as a pre-fill for the next set).
+                      set_note_default <- tryCatch({
+                        raw <- if (is_logged || is_editing) log_entry$notes
+                          else if (s > 1 && length(we_logs) >= s - 1) we_logs[[s-1]]$notes
+                          else NULL
+                        n <- as.character(raw %||% "")
+                        if (n %in% c("", "NA", "{}", "[]", "null")) "" else n
+                      }, error = \(e) "")
 
                       # When editing a previously logged set, defaults must
                       # come from the stored values, NOT from a fresh
@@ -644,6 +656,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                       input_bg  <- if (is_logged) "#071a10" else if (is_drop) "#1a1200" else "#0d0d0d"
                       input_bdr <- if (is_logged) "#0F6E56" else if (is_drop) "#FF9800" else "#1e1e1e"
 
+                      tagList(
                       div(style = paste0(
                             "display:grid;",
                             "grid-template-columns:24px 1fr 1fr 50px 34px;",
@@ -743,39 +756,38 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                               onclick = sprintf(
                                 "Shiny.setInputValue('log_set','%s|%d',{priority:'event'})",
                                 we$id, s))
-                      )
-                    }),
-
-                    # Notes textarea with localStorage persistence
-                    # (survives Shiny reconnects; key is unique per workout_exercise)
-                    div(style = "margin-top:8px;",
-                        tags$textarea(
-                          id          = paste0("note_", we$id),
-                          placeholder = "Notes (optional)...",
-                          style       = paste0(
-                            "background:#0d0d0d; border:1px solid #1a1a1a;",
-                            "color:#aaa; border-radius:8px; padding:8px 10px;",
-                            "font-size:12px; width:100%; box-sizing:border-box;",
-                            "resize:none; min-height:32px; font-family:inherit;",
-                            "line-height:1.4;"),
-                          ex_last_note
-                        ),
-                        tags$script(HTML(sprintf("
+                      ),
+                      # Per-set notes input — small, inline, one per set.
+                      # localStorage-backed so reconnects don't wipe a draft.
+                      div(style = "margin:0 0 6px 28px;",
+                          tags$input(
+                            type        = "text",
+                            id          = note_key,
+                            value       = set_note_default,
+                            placeholder = sprintf("Set %d note (optional)...", s),
+                            style       = paste0(
+                              "background:#0d0d0d; border:1px solid #1a1a1a;",
+                              "color:#aaa; border-radius:6px; padding:5px 8px;",
+                              "font-size:11px; width:calc(100% - 28px); box-sizing:border-box;",
+                              "font-family:inherit;")
+                          ),
+                          tags$script(HTML(sprintf("
 (function() {
-  var key = 'catrack_note_%s';
-  var ta  = document.getElementById('note_%s');
-  if (!ta) return;
-  // Restore from localStorage only when textarea is empty (no DB-loaded note)
-  if (ta.value === '') {
+  var key = 'catrack_note_%s_s%d';
+  var inp = document.getElementById('%s');
+  if (!inp) return;
+  if (inp.value === '') {
     var saved = localStorage.getItem(key);
-    if (saved) ta.value = saved;
+    if (saved) inp.value = saved;
   }
-  ta.addEventListener('input', function() {
-    localStorage.setItem(key, ta.value);
+  inp.addEventListener('input', function() {
+    localStorage.setItem(key, inp.value);
   });
 })();
-", we$id, we$id)))
-                    )
+", we$id, s, note_key)))
+                      )
+                      )  # end tagList wrapping set row + note
+                    })
                   ),  # end set grid
 
                   # Exercise history (collapsible, lazy-loaded)
@@ -1329,7 +1341,10 @@ setup_workout_server <- function(input, output, session, rv) {
     set_key  <- paste0("w_",   we_id, "_s", set_num)
     reps_key <- paste0("r_",   we_id, "_s", set_num)
     rpe_key  <- paste0("rpe_", we_id, "_s", set_num)
-    note_key <- paste0("note_", we_id)
+    # Per-set note key — falls back to the legacy per-exercise field
+    # for any saved drafts still pending in localStorage.
+    note_key        <- paste0("note_", we_id, "_s", set_num)
+    legacy_note_key <- paste0("note_", we_id)
 
     weight <- tryCatch(as.numeric(input[[set_key]]),   error = \(e) NA)
     reps   <- tryCatch({
@@ -1340,7 +1355,7 @@ setup_workout_server <- function(input, output, session, rv) {
       v <- as.numeric(input[[rpe_key]])
       if (is.na(v)) NA_integer_ else as.integer(min(10L, max(0L, round(v))))
     }, error = \(e) NA_integer_)
-    notes  <- input[[note_key]] %||% ""
+    notes  <- input[[note_key]] %||% input[[legacy_note_key]] %||% ""
 
     if (is.na(reps) || reps <= 0) {
       showNotification("Please enter reps before logging.", type = "warning")
