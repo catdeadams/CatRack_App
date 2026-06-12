@@ -349,11 +349,17 @@ setup_program_server <- function(input, output, session, rv) {
   # ── Rename program ────────────────────────────────────────
   observeEvent(input$rename_program, {
     pid     <- input$rename_program
-    all_p   <- rv$all_programs
-    cur_name <- if (!is.null(all_p) && nrow(all_p) > 0) {
-      row <- all_p[all_p$program_id == pid, ]
-      if (nrow(row) > 0) as.character(row$display_name[1]) else ""
-    } else ""
+    cur_name <- ""
+    # Try the active program first (dashboard's edit pencil hits this path
+    # before the user has visited the Programs tab to populate all_programs).
+    if (!is.null(rv$program) &&
+        as.character(rv$program$id %||% "") == as.character(pid)) {
+      cur_name <- as.character(rv$program$name %||% "")
+    } else if (!is.null(rv$all_programs) && nrow(rv$all_programs) > 0) {
+      row <- rv$all_programs[rv$all_programs$program_id == pid, ]
+      if (nrow(row) > 0)
+        cur_name <- as.character(row$display_name[1] %||% row$name[1] %||% "")
+    }
     rv$rename_program_id    <- pid
     rv$rename_current_name  <- cur_name
   })
@@ -365,7 +371,10 @@ setup_program_server <- function(input, output, session, rv) {
 
   observeEvent(input$save_rename, {
     req(rv$token)
-    parts    <- strsplit(input$save_rename, "\\|", fixed = TRUE)[[1]]
+    # NOTE: fixed=TRUE means the pattern is literal — "\\|" matched the
+    # two-char string `\|` which never appears, so the rename Save
+    # silently failed. Use the literal pipe instead.
+    parts    <- strsplit(input$save_rename, "|", fixed = TRUE)[[1]]
     if (length(parts) < 2) return()
     pid      <- parts[1]
     new_name <- paste(parts[-1], collapse = "|")  # handle | in name

@@ -72,6 +72,13 @@ server <- function(input, output, session) {
     delete_program_name = NULL,
     skip_workout_id     = NULL,
     skip_session_label  = NULL,
+
+    # Profile page state
+    profile_expanded    = FALSE,
+    profile_edit_gear   = FALSE,
+    profile_edit_freq   = FALSE,
+    profile_edit_spw    = NULL,
+    profile_save_msg    = NULL,
     
     # Active workout
     active_workout_id  = NULL,
@@ -225,6 +232,16 @@ server <- function(input, output, session) {
 
       if (identical(input$auth_action, "signup")) {
         rv$ob_name <- trimws(input$signup_name %||% "")
+        # Persist the signup name immediately so the user never has to
+        # retype it later — onboarding pre-fills from the profile and
+        # subsequent program regens read it from there too.
+        if (!is.null(rv$user_id) && nchar(rv$ob_name) > 0) {
+          tryCatch(
+            sb_upsert("user_profiles",
+                      list(id = rv$user_id, display_name = rv$ob_name),
+                      token = rv$token),
+            error = \(e) message("Signup display_name save failed: ", e$message))
+        }
       }
 
       load_user_data()
@@ -430,6 +447,10 @@ server <- function(input, output, session) {
 
     # ── Onboarding ──
     if (page == "onboarding") {
+      # Prefer (a) any name the user has just typed in this session,
+      # (b) what's on their profile, (c) what they signed up with.
+      effective_name <- if (nchar(rv$ob_name %||% "") > 0) rv$ob_name
+        else as.character(rv$profile$display_name %||% "")
       ob_values <- list(
         goal             = rv$ob_goal,
         difficulty       = rv$ob_difficulty,
@@ -438,7 +459,7 @@ server <- function(input, output, session) {
         session_length_minutes = rv$ob_session_length,
         pullup_baseline  = rv$ob_pullup_baseline,
         equipment        = rv$ob_equipment,
-        display_name     = rv$ob_name
+        display_name     = effective_name
       )
       # Render the methodology modal here too — the early `return`
       # above used to skip the global modal mount, so the "How is
@@ -577,9 +598,14 @@ server <- function(input, output, session) {
                            
                            "profile" = div(class = "ct-content-with-nav",
                                            profile_page_ui(
-                                             profile    = rv$profile,
-                                             user_email = rv$user_email,
-                                             program    = rv$program
+                                             profile      = rv$profile,
+                                             user_email   = rv$user_email,
+                                             program      = rv$program,
+                                             expanded     = isTRUE(rv$profile_expanded),
+                                             edit_gear    = isTRUE(rv$profile_edit_gear),
+                                             edit_freq    = isTRUE(rv$profile_edit_freq),
+                                             ob_equipment = if (isTRUE(rv$profile_edit_gear)) rv$ob_equipment else NULL,
+                                             save_msg     = rv$profile_save_msg
                                            )
                            ),
                            
@@ -589,7 +615,16 @@ server <- function(input, output, session) {
     
     tagList(page_content,
             bottom_nav_ui(active = rv$nav_tab),
-            if (isTRUE(rv$show_methodology)) methodology_modal_ui())
+            if (isTRUE(rv$show_methodology)) methodology_modal_ui(),
+            # Render the rename + delete modals at the global level so
+            # the dashboard's edit pencil works without routing the user
+            # to the Programs tab first.
+            if (!is.null(rv$rename_program_id))
+              rename_modal_ui(rv$rename_program_id,
+                              rv$rename_current_name %||% ""),
+            if (!is.null(rv$delete_program_id))
+              delete_program_modal_ui(rv$delete_program_id,
+                                      rv$delete_program_name %||% "Program"))
   })
   
   # ── Workout screen setup ────────────────────────────────────

@@ -1312,6 +1312,194 @@ generate_program <- function(
 }
 
 # ============================================================
+# 9b. REGENERATE REMAINING WEEKS of an existing program
+# ============================================================
+# Use when the user changes equipment, frequency, or split mid-program.
+# Preserves completed (or in-progress) past weeks and rebuilds weeks
+# >= from_week with the new settings. The program record itself stays
+# active — only its `equipment_snapshot` / `sessions_per_week` /
+# `split_style` get updated. Same Block N, same start date, same name.
+#
+# from_week: integer 1-12. If NULL, defaults to the week containing today.
+regenerate_remaining_weeks <- function(
+    program_id,
+    user_id,
+    from_week              = NULL,
+    new_equipment          = NULL,
+    new_sessions_per_week  = NULL,
+    new_split_style        = NULL
+) {
+  prog <- sb_get("programs", paste0("?id=eq.", program_id))
+  if (is.null(prog) || nrow(prog) == 0)
+    stop("Program ", program_id, " not found")
+  prog <- prog[1, ]
+
+  goal       <- as.character(prog$goal)
+  difficulty <- as.character(prog$difficulty)
+  sessions_per_week <- if (!is.null(new_sessions_per_week))
+                        as.integer(new_sessions_per_week)
+                      else as.integer(prog$sessions_per_week)
+  split_style <- if (!is.null(new_split_style)) new_split_style
+                 else as.character(prog$split_style)
+  session_length_minutes <- as.integer(prog$session_length_minutes %||% 45L)
+  pullup_baseline <- tryCatch({
+    p <- sb_get("user_profiles",
+                paste0("?id=eq.", user_id, "&select=pullup_baseline"))
+    if (!is.null(p) && nrow(p) > 0) as.integer(p$pullup_baseline %||% 0L) else 0L
+  }, error = \(e) 0L)
+  start_date <- tryCatch(as.Date(prog$start_date), error = \(e) Sys.Date())
+  equipment  <- if (!is.null(new_equipment)) new_equipment
+                else tryCatch(prog$equipment_snapshot[[1]],
+                              error = \(e) character(0))
+
+  if (is.null(from_week)) {
+    from_week <- max(1L,
+      as.integer(floor(as.numeric(Sys.Date() - start_date) / 7)) + 1L)
+  }
+  if (from_week > 12L) {
+    cat("Program already past week 12 — nothing to regenerate.\n")
+    return(invisible(NULL))
+  }
+
+  cat(sprintf("\n=== Regenerating weeks %d-12 of program %s ===\n",
+              from_week, program_id))
+  cat(sprintf("  New equipment: %s\n",
+              if (!is.null(new_equipment)) paste(equipment, collapse = ", ")
+              else "(unchanged)"))
+  cat(sprintf("  New frequency: %s\n",
+              if (!is.null(new_sessions_per_week))
+                paste0(sessions_per_week, "x/wk") else "(unchanged)"))
+  cat(sprintf("  New split:     %s\n",
+              if (!is.null(new_split_style)) split_style else "(unchanged)"))
+
+  # ── 1. Delete future workouts (and their exercises + set logs) ──
+  future_wkts <- sb_get("workouts",
+    sprintf("?program_id=eq.%s&week_number=gte.%d&select=id",
+            program_id, from_week))
+  if (!is.null(future_wkts) && nrow(future_wkts) > 0) {
+    wid_list <- paste0("(", paste(future_wkts$id, collapse = ","), ")")
+    we_rows <- sb_get("workout_exercises",
+                      paste0("?workout_id=in.", wid_list, "&select=id"))
+    if (!is.null(we_rows) && nrow(we_rows) > 0) {
+      we_list <- paste0("(", paste(we_rows$id, collapse = ","), ")")
+      request(paste0(SUPABASE_URL,
+                     "/rest/v1/workout_set_logs?workout_exercise_id=in.",
+                     we_list)) |>
+        req_headers("apikey" = SUPABASE_SERVICE_KEY,
+                    "Authorization" = paste("Bearer", SUPABASE_SERVICE_KEY)) |>
+        req_method("DELETE") |>
+        req_error(is_error = \(r) FALSE) |>
+        req_perform()
+    }
+    request(paste0(SUPABASE_URL,
+                   "/rest/v1/workout_exercises?workout_id=in.", wid_list)) |>
+      req_headers("apikey" = SUPABASE_SERVICE_KEY,
+                  "Authorization" = paste("Bearer", SUPABASE_SERVICE_KEY)) |>
+      req_method("DELETE") |>
+      req_error(is_error = \(r) FALSE) |>
+      req_perform()
+    request(paste0(SUPABASE_URL,
+                   "/rest/v1/workouts?program_id=eq.", program_id,
+                   "&week_number=gte.", from_week)) |>
+      req_headers("apikey" = SUPABASE_SERVICE_KEY,
+                  "Authorization" = paste("Bearer", SUPABASE_SERVICE_KEY)) |>
+      req_method("DELETE") |>
+      req_error(is_error = \(r) FALSE) |>
+      req_perform()
+  }
+
+  # ── 2. Update the program record with whatever changed ──
+  patch_fields <- list()
+  if (!is.null(new_equipment))         patch_fields$equipment_snapshot <- I(equipment)
+  if (!is.null(new_sessions_per_week)) patch_fields$sessions_per_week  <- as.integer(sessions_per_week)
+  if (!is.null(new_split_style))       patch_fields$split_style        <- split_style
+  if (length(patch_fields) > 0)
+    sb_patch("programs", paste0("?id=eq.", program_id), patch_fields)
+
+  # ── 3. Re-run the per-week loop for from_week:12 ──
+  exercises <- get_eligible_exercises(equipment)
+  schedule  <- get_split_schedule(split_style, sessions_per_week, goal)
+
+  total_sessions <- 0L; total_exercises <- 0L
+
+  for (week in from_week:12) {
+    block_variant <- c("A","B","C")[ceiling(week / 4)]
+    week_in_block <- ((week - 1) %% 4) + 1
+
+    cat(sprintf("\n  Week %02d [Block %s %s]",
+                week, block_variant,
+                BLOCK_PROFILES[[block_variant]]$label))
+
+    week_targets <- weekly_targets_for_week(goal, difficulty,
+                                            block_variant, week_in_block)
+    sets_scheduled <- list()
+
+    for (sess_idx in seq_len(schedule$n_sessions)) {
+      session_label <- schedule$labels[sess_idx]
+      slots <- build_ideal_session(goal, split_style, sessions_per_week,
+                                   sess_idx, block_variant, week_in_block,
+                                   pullup_baseline)
+      slots <- trim_to_budget(slots, session_length_minutes)
+
+      day_offset <- switch(as.character(sessions_per_week),
+        "2" = c(0L, 3L),
+        "3" = c(0L, 2L, 4L),
+        "4" = c(0L, 1L, 3L, 4L),
+        c(0L, 2L, 4L)
+      )
+      sched_date <- start_date + ((week - 1) * 7L) + day_offset[sess_idx]
+
+      workout_row <- list(
+        program_id     = program_id,
+        user_id        = user_id,
+        week_number    = as.integer(week),
+        session_number = as.integer(sess_idx),
+        session_label  = session_label,
+        scheduled_date = as.character(sched_date)
+      )
+      workout_id <- sb_insert_one("workouts", workout_row)
+      if (is.null(workout_id)) { cat("\n    WARN: workout insert failed\n"); next }
+
+      sess <- instantiate_session(slots, exercises, goal, difficulty,
+                                  block_variant, week_in_block,
+                                  week_targets, sets_scheduled,
+                                  pullup_baseline)
+
+      for (m in names(sess$sets_added))
+        sets_scheduled[[m]] <- (sets_scheduled[[m]] %||% 0) + sess$sets_added[[m]]
+
+      if (length(sess$exercises) > 0) {
+        ex_rows <- lapply(sess$exercises, function(ea) {
+          list(
+            workout_id      = workout_id,
+            exercise_id     = ea$exercise_id,
+            exercise_order  = as.integer(ea$exercise_order),
+            prescribed_sets = as.integer(ea$prescribed_sets),
+            rep_range_low   = as.integer(ea$rep_range_low),
+            rep_range_high  = as.integer(ea$rep_range_high),
+            rpe_target      = ea$rpe_target,
+            rest_seconds    = as.integer(ea$rest_seconds),
+            set_type        = ea$set_type,
+            warmup_sets     = as.integer(ea$warmup_sets),
+            superset_group  = ea$superset_group
+          )
+        })
+        resp <- sb_post("workout_exercises", ex_rows)
+        if (resp$status_code %in% c(200, 201))
+          total_exercises <- total_exercises + length(sess$exercises)
+      }
+
+      total_sessions <- total_sessions + 1L
+      cat(".")
+    }
+  }
+
+  cat(sprintf("\n\nRegenerated %d sessions, %d exercises.\n",
+              total_sessions, total_exercises))
+  invisible(program_id)
+}
+
+# ============================================================
 # 10. PREVIEW: print a week of the generated program
 # ============================================================
 preview_program <- function(program_id, week = 1) {

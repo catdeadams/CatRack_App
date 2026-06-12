@@ -711,6 +711,17 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
                     tools::toTitleCase(program$difficulty))),
           div(style = "display:flex; align-items:center; gap:8px;",
               div(class = "ct-block-title", program$name),
+              tags$button(
+                HTML("&#9998;"),
+                title = "Rename program",
+                style = paste0(
+                  "background:#1e1e1e; border:1px solid #2a2a2a; border-radius:50%;",
+                  "width:22px; height:22px; padding:0; color:#5DCAA5;",
+                  "font-size:11px; cursor:pointer; line-height:1;",
+                  "display:inline-flex; align-items:center; justify-content:center;"),
+                onclick = sprintf(
+                  "Shiny.setInputValue('rename_program','%s',{priority:'event'})",
+                  program$id)),
               methodology_info_btn("sm"))
         ),
         div(style = "text-align:right; font-size:12px; color:#888;",

@@ -160,16 +160,37 @@ password_reset_ui <- function(error_msg = NULL) {
 }
 
 # ── PROFILE PAGE UI ──────────────────────────────────────────
+# Simplified layout:
+#   1. Header (avatar/name/email)
+#   2. Display name (single source of truth; syncs to friends + programs)
+#   3. Active Program card — collapsed by default. Tap to expand and
+#      see goal/difficulty/split/frequency/equipment. The expanded view
+#      has Edit Gear + Edit Frequency buttons that regenerate only the
+#      remaining (uncompleted) weeks of the current program.
+#   4. Account section.
+#
+# Goal / difficulty / split are read-only here — those changes are
+# disruptive enough to warrant a brand-new program via "+ New Program".
 
 profile_page_ui <- function(profile, user_email, program,
-                             editing = FALSE, save_msg = NULL) {
+                             expanded   = FALSE,
+                             edit_gear  = FALSE,
+                             edit_freq  = FALSE,
+                             ob_equipment = NULL,
+                             save_msg = NULL) {
 
-  goal      <- profile$goal       %||% "hypertrophy"
-  diff      <- profile$difficulty %||% "intermediate"
-  spw       <- as.integer(profile$sessions_per_week %||% 3L)
-  split     <- profile$split_style %||% "full_body"
-  equip     <- tryCatch(profile$equipment_available[[1]], error=\(e) character(0))
   disp_name <- profile$display_name %||% ""
+  goal      <- as.character(program$goal       %||% profile$goal       %||% "")
+  diff      <- as.character(program$difficulty %||% profile$difficulty %||% "")
+  spw       <- as.integer(program$sessions_per_week %||% profile$sessions_per_week %||% 3L)
+  split     <- as.character(program$split_style %||% profile$split_style %||% "full_body")
+  # Equipment defaults: program snapshot → profile → ob_equipment (for the
+  # gear-edit modal preview)
+  cur_equip <- tryCatch(
+    program$equipment_snapshot[[1]] %||% profile$equipment_available[[1]],
+    error = \(e) character(0))
+  edit_equip <- ob_equipment %||% cur_equip
+  prog_name <- as.character(program$name %||% "No active program")
 
   tagList(
     # ── Header ─────────────────────────────────────────────
@@ -184,14 +205,15 @@ profile_page_ui <- function(profile, user_email, program,
       div(style = "font-size:13px; color:#555;", user_email)
     ),
 
-    # ── Save message ───────────────────────────────────────
     if (!is.null(save_msg))
       div(class = "ct-alert ct-alert-success", save_msg),
 
-    # ── Display name ───────────────────────────────────────
+    # ── Display name (single source of truth for "appears to others") ──
     div(style = "background:#161616; border:1px solid #222; border-radius:12px;
                  padding:16px; margin-bottom:10px;",
       div(class = "ct-section-title", "DISPLAY NAME"),
+      div(style = "font-size:11px; color:#555; margin-bottom:8px; line-height:1.4;",
+          "Shown to friends and used in your program names."),
       div(style = "display:flex; gap:8px; align-items:center;",
         tags$input(type="text", id="profile_name", value=disp_name,
           style="flex:1; background:#1e1e1e; border:1.5px solid #262626;
@@ -205,137 +227,101 @@ profile_page_ui <- function(profile, user_email, program,
       )
     ),
 
-    # ── Goal ───────────────────────────────────────────────
-    div(style = "background:#161616; border:1px solid #222; border-radius:12px;
-                 padding:16px; margin-bottom:10px;",
-      div(class = "ct-section-title", "GOAL"),
-      div(style = "display:flex; flex-direction:column; gap:6px;",
-        lapply(names(GOALS), function(g) {
-          is_sel <- isTRUE(goal == g)
-          div(style = paste0(
-            "display:flex; align-items:center; gap:10px; padding:10px 12px;",
-            "border-radius:8px; cursor:pointer; border:1.5px solid ",
-            if (is_sel) "#1D9E75; background:#061a12;" else "#222; background:#1e1e1e;"),
+    # ── Active Program card (collapsed → expanded on tap) ──
+    if (!is.null(program)) {
+      div(style = "background:#161616; border:1px solid #222; border-radius:12px;
+                   padding:0; margin-bottom:10px; overflow:hidden;",
+        # Clickable header: program name + edit pencil + chevron
+        div(style = "padding:14px 16px; cursor:pointer;
+                     display:flex; align-items:center; gap:10px;",
+            onclick = "Shiny.setInputValue('profile_toggle_program', Math.random(), {priority:'event'})",
+          div(style = "flex:1; min-width:0;",
+            div(class = "ct-section-title", style = "margin-bottom:4px;", "ACTIVE PROGRAM"),
+            div(style = "font-size:15px; font-weight:700; color:#f0f0f0;
+                         white-space:nowrap; overflow:hidden; text-overflow:ellipsis;",
+                prog_name)
+          ),
+          # Rename button
+          tags$button(HTML("&#9998;"),
+            title = "Rename",
+            style = paste0(
+              "background:#1e1e1e; border:1px solid #2a2a2a; border-radius:50%;",
+              "width:30px; height:30px; padding:0; color:#5DCAA5;",
+              "font-size:13px; cursor:pointer; line-height:1;",
+              "display:inline-flex; align-items:center; justify-content:center;",
+              "flex-shrink:0;"),
             onclick = sprintf(
-              "Shiny.setInputValue('profile_goal','%s',{priority:'event'})", g),
-            div(style = paste0("font-size:14px; width:20px; text-align:center; ",
-                               "color:", if (is_sel) "#1D9E75" else "#555", ";"),
-                GOALS[[g]]$icon),
-            div(
-              div(style = paste0("font-size:13px; font-weight:600; ",
-                                 "color:", if (is_sel) "#f0f0f0" else "#aaa", ";"),
-                  GOALS[[g]]$label),
-              div(style = "font-size:11px; color:#555;", GOALS[[g]]$desc)
+              "event.stopPropagation(); Shiny.setInputValue('rename_program','%s',{priority:'event'})",
+              program$id)),
+          div(style = "color:#555; font-size:14px; flex-shrink:0;",
+              if (expanded) HTML("&#9650;") else HTML("&#9660;"))
+        ),
+
+        # Expanded details
+        if (expanded)
+          div(style = "border-top:1px solid #222; padding:14px 16px;",
+            # ── Read-only summary
+            div(style = "display:grid; grid-template-columns:1fr 1fr; gap:10px;
+                         font-size:12px; margin-bottom:14px;",
+              div(div(style = "color:#555; font-size:10px; text-transform:uppercase;
+                               letter-spacing:0.07em;", "Goal"),
+                  div(style = "color:#f0f0f0; font-weight:600; margin-top:2px;",
+                      tools::toTitleCase(gsub("_", " ", goal)))),
+              div(div(style = "color:#555; font-size:10px; text-transform:uppercase;
+                               letter-spacing:0.07em;", "Difficulty"),
+                  div(style = "color:#f0f0f0; font-weight:600; margin-top:2px;",
+                      tools::toTitleCase(diff))),
+              div(div(style = "color:#555; font-size:10px; text-transform:uppercase;
+                               letter-spacing:0.07em;", "Split"),
+                  div(style = "color:#f0f0f0; font-weight:600; margin-top:2px;",
+                      names(SPLIT_OPTIONS)[SPLIT_OPTIONS == split][1] %||% split)),
+              div(div(style = "color:#555; font-size:10px; text-transform:uppercase;
+                               letter-spacing:0.07em;", "Frequency"),
+                  div(style = "color:#f0f0f0; font-weight:600; margin-top:2px;",
+                      paste0(spw, "x / week"))),
+              div(div(style = "color:#555; font-size:10px; text-transform:uppercase;
+                               letter-spacing:0.07em;", "Equipment"),
+                  div(style = "color:#f0f0f0; font-weight:600; margin-top:2px;",
+                      paste0(length(cur_equip %||% character(0)), " items")))
+            ),
+            # ── Edit Gear / Edit Frequency buttons
+            div(style = "background:#1a120a; border:1px solid #854F0B; border-radius:8px;
+                         padding:10px 12px; margin-bottom:12px;
+                         font-size:11px; color:#888; line-height:1.4;",
+                "Editing gear or frequency rebuilds the remaining weeks of this program. ",
+                "Completed sessions stay logged."),
+            div(style = "display:flex; flex-direction:column; gap:8px;",
+              tags$button("Edit Gear",
+                class = "ct-btn-secondary",
+                onclick = "Shiny.setInputValue('profile_open_edit_gear', Math.random(), {priority:'event'})"),
+              tags$button("Edit Frequency (2 / 3 days)",
+                class = "ct-btn-secondary",
+                onclick = "Shiny.setInputValue('profile_open_edit_freq', Math.random(), {priority:'event'})")
             )
           )
-        })
       )
-    ),
-
-    # ── Difficulty ─────────────────────────────────────────
-    div(style = "background:#161616; border:1px solid #222; border-radius:12px;
-                 padding:16px; margin-bottom:10px;",
-      div(class = "ct-section-title", "DIFFICULTY"),
-      div(style = "display:flex; flex-direction:column; gap:6px;",
-        lapply(names(DIFFICULTY_OPTIONS), function(label) {
-          val    <- DIFFICULTY_OPTIONS[[label]]
-          is_sel <- isTRUE(diff == val)
-          div(style = paste0(
-            "padding:10px 12px; border-radius:8px; cursor:pointer;",
-            "border:1.5px solid ", if (is_sel) "#1D9E75; background:#061a12;"
-            else "#222; background:#1e1e1e;"),
-            onclick = sprintf(
-              "Shiny.setInputValue('profile_difficulty','%s',{priority:'event'})", val),
-            div(style = paste0("font-size:13px; font-weight:600; ",
-                               "color:", if (is_sel) "#f0f0f0" else "#aaa", ";"),
-                switch(val, beginner="🌱 Beginner",
-                            intermediate="🔥 Intermediate", advanced="⚡ Advanced")),
-            div(style = "font-size:11px; color:#555; margin-top:2px;", label)
-          )
-        })
+    } else {
+      div(style = "background:#161616; border:1px solid #222; border-radius:12px;
+                   padding:16px; margin-bottom:10px;",
+        div(class = "ct-section-title", "ACTIVE PROGRAM"),
+        div(style = "font-size:13px; color:#888;", "None yet."),
+        tags$button("+ New Program",
+          style = "margin-top:10px; background:#1D9E75; color:#fff; border:none;
+                   border-radius:8px; padding:10px 14px; font-weight:700; cursor:pointer;
+                   font-size:13px;",
+          onclick = "Shiny.setInputValue('go_onboarding', 1, {priority:'event'})")
       )
-    ),
+    },
 
-    # ── Frequency + Split ──────────────────────────────────
-    div(style = "background:#161616; border:1px solid #222; border-radius:12px;
-                 padding:16px; margin-bottom:10px;",
-      div(class = "ct-section-title", "FREQUENCY & SPLIT"),
-      div(style = "display:flex; gap:6px; margin-bottom:10px;",
-        lapply(names(FREQUENCY_OPTIONS), function(label) {
-          val    <- as.integer(FREQUENCY_OPTIONS[[label]])
-          is_sel <- isTRUE(spw == val)
-          div(style = paste0(
-            "flex:1; text-align:center; padding:12px 8px; border-radius:8px;",
-            "cursor:pointer; border:1.5px solid ",
-            if (is_sel) "#1D9E75; background:#061a12;" else "#222; background:#1e1e1e;"),
-            onclick = sprintf(
-              "Shiny.setInputValue('profile_frequency',%d,{priority:'event'})", val),
-            div(style = "font-size:20px; font-weight:700; color:#f0f0f0;", val),
-            div(style = "font-size:10px; color:#555;", "days/wk"))
-        })
-      ),
-      div(style = "display:flex; flex-direction:column; gap:6px;",
-        lapply(names(SPLIT_OPTIONS), function(label) {
-          val    <- SPLIT_OPTIONS[[label]]
-          is_sel <- isTRUE(split == val)
-          div(style = paste0(
-            "padding:10px 12px; border-radius:8px; cursor:pointer;",
-            "border:1.5px solid ", if (is_sel) "#1D9E75; background:#061a12;"
-            else "#222; background:#1e1e1e;"),
-            onclick = sprintf(
-              "Shiny.setInputValue('profile_split','%s',{priority:'event'})", val),
-            div(style = paste0("font-size:13px; font-weight:600; ",
-                               "color:", if(is_sel) "#f0f0f0" else "#aaa", ";"), label),
-            div(style = "font-size:11px; color:#555; margin-top:2px;",
-                switch(val,
-                  full_body      = "Every session hits all major muscle groups",
-                  push_pull_legs = "Separate push, pull, and leg days",
-                  upper_lower    = "Alternate upper and lower body"))
-          )
-        })
-      )
-    ),
+    # ── Edit Gear modal ────────────────────────────────────
+    if (isTRUE(edit_gear))
+      profile_edit_gear_modal_ui(edit_equip),
 
-    # ── Equipment ──────────────────────────────────────────
-    div(style = "background:#161616; border:1px solid #222; border-radius:12px;
-                 padding:16px; margin-bottom:10px;",
-      div(class = "ct-section-title", "EQUIPMENT"),
-      div(style = "text-align:right; margin-bottom:8px;",
-        tags$a("All", href="#",
-          onclick="Shiny.setInputValue('equip_select_all',Math.random(),{priority:'event'})"),
-        span(style="color:#333;", " · "),
-        tags$a("Clear", href="#",
-          onclick="Shiny.setInputValue('equip_clear_all',Math.random(),{priority:'event'})")
-      ),
-      lapply(names(EQUIPMENT_CATEGORIES), function(cat_name) {
-        cat_items <- EQUIPMENT_CATEGORIES[[cat_name]]
-        tagList(
-          div(class = "ct-equip-category", cat_name),
-          div(class = "ct-equip-grid",
-            lapply(names(cat_items), function(equip_id) {
-              is_sel <- equip_id %in% (equip %||% character(0))
-              div(class = paste("ct-equip-item", if(is_sel) "selected"),
-                onclick = sprintf(
-                  "Shiny.setInputValue('toggle_equip','%s',{priority:'event'})", equip_id),
-                div(class="ct-equip-check", if(is_sel) "✓" else ""),
-                cat_items[[equip_id]])
-            })
-          )
-        )
-      })
-    ),
+    # ── Edit Frequency modal ───────────────────────────────
+    if (isTRUE(edit_freq))
+      profile_edit_freq_modal_ui(spw),
 
-    # ── Save & regenerate ──────────────────────────────────
-    div(style = "background:#1a120a; border:1px solid #854F0B; border-radius:10px;
-                 padding:12px 14px; margin-bottom:14px;",
-      div(style = "font-size:12px; color:#888; line-height:1.5; margin-bottom:10px;",
-          "Saving will update your profile. Choosing a different goal, difficulty, or equipment will regenerate the remaining weeks of your current program."),
-      tags$button("Save & Apply",
-        class = "ct-btn-primary",
-        onclick = "Shiny.setInputValue('save_profile', Math.random(), {priority:'event'})")
-    ),
-
-    # ── Danger zone ────────────────────────────────────────
+    # ── Account section ────────────────────────────────────
     div(style = "background:#161616; border:1px solid #222; border-radius:12px;
                  padding:16px; margin-bottom:10px;",
       div(class = "ct-section-title", "ACCOUNT"),
@@ -350,6 +336,104 @@ profile_page_ui <- function(profile, user_email, program,
           class = "ct-btn-danger",
           onclick = "Shiny.setInputValue('logout', Math.random(), {priority:'event'})")
       )
+    )
+  )
+}
+
+# ── EDIT GEAR MODAL ──────────────────────────────────────────
+# Equipment multi-select. Save triggers regen of remaining weeks.
+profile_edit_gear_modal_ui <- function(equip) {
+  div(style = "position:fixed; top:0; left:0; right:0; bottom:0;
+               background:rgba(0,0,0,0.92); z-index:300;
+               display:flex; align-items:flex-start; justify-content:center;
+               overflow-y:auto;",
+    div(style = "background:#0f0f0f; border:1px solid #1e1e1e;
+                 width:100%; max-width:480px; min-height:100vh;
+                 padding:20px 20px 40px;",
+      div(style = "display:flex; justify-content:space-between; align-items:center;
+                   margin-bottom:14px;",
+        div(style = "font-size:17px; font-weight:700; color:#f0f0f0;",
+            "Edit Equipment"),
+        tags$button("✕",
+          style = "background:#1e1e1e; border:none; border-radius:8px;
+                   width:32px; height:32px; color:#aaa; font-size:16px; cursor:pointer;",
+          onclick = "Shiny.setInputValue('profile_close_edit_gear', Math.random(), {priority:'event'})")
+      ),
+      div(style = "font-size:12px; color:#888; margin-bottom:16px; line-height:1.4;",
+          "Saving will rebuild the remaining weeks of your program with the new equipment list. Completed sessions are kept as-is."),
+
+      div(style = "text-align:right; margin-bottom:8px;",
+        tags$a("All", href="#",
+          onclick="Shiny.setInputValue('equip_select_all',Math.random(),{priority:'event'})"),
+        span(style="color:#333;", " · "),
+        tags$a("Clear", href="#",
+          onclick="Shiny.setInputValue('equip_clear_all',Math.random(),{priority:'event'})")
+      ),
+      lapply(names(EQUIPMENT_CATEGORIES), function(cat_name) {
+        cat_items <- EQUIPMENT_CATEGORIES[[cat_name]]
+        tagList(
+          div(class = "ct-equip-category", cat_name),
+          div(class = "ct-equip-grid",
+            lapply(names(cat_items), function(equip_id) {
+              is_sel <- equip_id %in% (equip %||% character(0))
+              div(class = paste("ct-equip-item", if (is_sel) "selected"),
+                onclick = sprintf(
+                  "Shiny.setInputValue('toggle_equip','%s',{priority:'event'})", equip_id),
+                div(class = "ct-equip-check", if (is_sel) "✓" else ""),
+                cat_items[[equip_id]])
+            })
+          )
+        )
+      }),
+
+      tags$button("Save & Rebuild Remaining Weeks",
+        style = "width:100%; background:#1D9E75; color:#fff; border:none;
+                 border-radius:12px; padding:14px; font-size:14px; font-weight:700;
+                 cursor:pointer; margin-top:14px;",
+        onclick = "Shiny.setInputValue('profile_save_gear', Math.random(), {priority:'event'})"),
+
+      tags$button("Cancel",
+        style = "width:100%; background:none; color:#888; border:none;
+                 border-radius:8px; padding:10px; font-size:12px; cursor:pointer; margin-top:6px;",
+        onclick = "Shiny.setInputValue('profile_close_edit_gear', Math.random(), {priority:'event'})")
+    )
+  )
+}
+
+# ── EDIT FREQUENCY MODAL ─────────────────────────────────────
+profile_edit_freq_modal_ui <- function(current_spw) {
+  div(style = "position:fixed; top:0; left:0; right:0; bottom:0;
+               background:rgba(0,0,0,0.85); z-index:300;
+               display:flex; align-items:center; justify-content:center;
+               padding:20px;",
+    div(style = "background:#161616; border:1px solid #262626; border-radius:16px;
+                 width:100%; max-width:380px; padding:22px;",
+      div(style = "font-size:16px; font-weight:700; color:#f0f0f0; margin-bottom:4px;",
+          "Edit Frequency"),
+      div(style = "font-size:12px; color:#888; margin-bottom:16px; line-height:1.4;",
+          "Changing days/week rebuilds the remaining weeks of your program. Completed sessions are kept."),
+      div(style = "display:flex; gap:8px; margin-bottom:16px;",
+        lapply(c(2L, 3L), function(val) {
+          is_sel <- isTRUE(as.integer(current_spw) == val)
+          div(style = paste0(
+            "flex:1; text-align:center; padding:18px 8px; border-radius:10px;",
+            "cursor:pointer; border:1.5px solid ",
+            if (is_sel) "#1D9E75; background:#061a12;" else "#262626; background:#1e1e1e;"),
+            onclick = sprintf(
+              "Shiny.setInputValue('profile_pick_freq',%d,{priority:'event'})", val),
+            div(style = "font-size:22px; font-weight:700; color:#f0f0f0;", val),
+            div(style = "font-size:10px; color:#555;", "days/week"))
+        })
+      ),
+      tags$button("Save & Rebuild Remaining Weeks",
+        style = "width:100%; background:#1D9E75; color:#fff; border:none;
+                 border-radius:10px; padding:12px; font-size:13px; font-weight:700;
+                 cursor:pointer;",
+        onclick = "Shiny.setInputValue('profile_save_freq', Math.random(), {priority:'event'})"),
+      tags$button("Cancel",
+        style = "width:100%; background:none; color:#888; border:none;
+                 padding:10px; font-size:12px; cursor:pointer; margin-top:4px;",
+        onclick = "Shiny.setInputValue('profile_close_edit_freq', Math.random(), {priority:'event'})")
     )
   )
 }
@@ -405,11 +489,114 @@ setup_profile_server <- function(input, output, session, rv) {
     }
   })
 
-  # ── Profile field observers ───────────────────────────────
-  observeEvent(input$profile_goal,       { rv$profile_edit$goal       <- input$profile_goal })
-  observeEvent(input$profile_difficulty, { rv$profile_edit$difficulty  <- input$profile_difficulty })
-  observeEvent(input$profile_frequency,  { rv$profile_edit$spw         <- as.integer(input$profile_frequency) })
-  observeEvent(input$profile_split,      { rv$profile_edit$split_style <- input$profile_split })
+  # ── Toggle the program card open / closed ────────────────
+  observeEvent(input$profile_toggle_program, {
+    rv$profile_expanded <- !isTRUE(rv$profile_expanded)
+  })
+
+  # ── Open / close Edit Gear modal ──────────────────────────
+  observeEvent(input$profile_open_edit_gear, {
+    # Seed the modal's working set from the program's snapshot
+    rv$ob_equipment <- tryCatch(
+      rv$program$equipment_snapshot[[1]] %||%
+        rv$profile$equipment_available[[1]],
+      error = \(e) character(0))
+    rv$profile_edit_gear <- TRUE
+  })
+  observeEvent(input$profile_close_edit_gear, {
+    rv$profile_edit_gear <- FALSE
+  })
+
+  # ── Open / close Edit Frequency modal ─────────────────────
+  observeEvent(input$profile_open_edit_freq, {
+    rv$profile_edit_spw  <- as.integer(rv$program$sessions_per_week %||%
+                                       rv$profile$sessions_per_week %||% 3L)
+    rv$profile_edit_freq <- TRUE
+  })
+  observeEvent(input$profile_close_edit_freq, {
+    rv$profile_edit_freq <- FALSE
+    rv$profile_edit_spw  <- NULL
+  })
+  observeEvent(input$profile_pick_freq, {
+    rv$profile_edit_spw <- as.integer(input$profile_pick_freq)
+  })
+
+  # ── Save Gear → regen remaining weeks ─────────────────────
+  observeEvent(input$profile_save_gear, {
+    req(rv$token, rv$program)
+    new_equip <- rv$ob_equipment %||% character(0)
+    if (length(new_equip) == 0) {
+      showNotification("Pick at least one piece of equipment first.",
+                       type = "warning", duration = 4); return()
+    }
+    withProgress(message = "Rebuilding remaining weeks...", value = 0.4, {
+      tryCatch({
+        regenerate_remaining_weeks(
+          program_id    = rv$program$id,
+          user_id       = rv$user_id,
+          new_equipment = new_equip
+        )
+        setProgress(0.9)
+        # Reload program + workouts
+        prog <- sb_select("programs", sprintf("?id=eq.%s", rv$program$id),
+                          token = rv$token)
+        if (!is.null(prog)) rv$program <- prog[1, ]
+        workouts <- sb_select("workouts",
+          sprintf("?program_id=eq.%s&order=week_number,session_number",
+                  rv$program$id), token = rv$token)
+        rv$workouts <- workouts
+        showNotification("Equipment updated. Remaining weeks rebuilt.",
+                         type = "message", duration = 4)
+      }, error = function(e) {
+        showNotification(paste("Rebuild failed:", conditionMessage(e)),
+                         type = "error", duration = 8)
+      })
+    })
+    rv$profile_edit_gear <- FALSE
+  })
+
+  # ── Save Frequency → regen remaining weeks ────────────────
+  observeEvent(input$profile_save_freq, {
+    req(rv$token, rv$program)
+    new_spw <- as.integer(rv$profile_edit_spw %||% 3L)
+    if (!new_spw %in% c(2L, 3L)) {
+      showNotification("Pick 2 or 3 days/week.", type = "warning"); return()
+    }
+    if (new_spw == as.integer(rv$program$sessions_per_week %||% 3L)) {
+      rv$profile_edit_freq <- FALSE; return()
+    }
+    withProgress(message = "Rebuilding remaining weeks...", value = 0.4, {
+      tryCatch({
+        regenerate_remaining_weeks(
+          program_id            = rv$program$id,
+          user_id               = rv$user_id,
+          new_sessions_per_week = new_spw
+        )
+        setProgress(0.9)
+        # Also persist on the user profile so future programs default to it
+        sb_update("user_profiles", sprintf("?id=eq.%s", rv$user_id),
+                  list(sessions_per_week = new_spw), token = rv$token)
+        prog <- sb_select("programs", sprintf("?id=eq.%s", rv$program$id),
+                          token = rv$token)
+        if (!is.null(prog)) rv$program <- prog[1, ]
+        workouts <- sb_select("workouts",
+          sprintf("?program_id=eq.%s&order=week_number,session_number",
+                  rv$program$id), token = rv$token)
+        rv$workouts <- workouts
+        pf <- sb_select("user_profiles", sprintf("?id=eq.%s", rv$user_id),
+                        token = rv$token)
+        if (!is.null(pf)) rv$profile <- pf[1, ]
+        showNotification(sprintf("Frequency set to %dx/week. Remaining weeks rebuilt.",
+                                 new_spw),
+                         type = "message", duration = 4)
+      }, error = function(e) {
+        showNotification(paste("Rebuild failed:", conditionMessage(e)),
+                         type = "error", duration = 8)
+      })
+    })
+    rv$profile_edit_freq <- FALSE
+    rv$profile_edit_spw  <- NULL
+  })
 
   # ── Display name save (instant, no regeneration) ─────────
   observeEvent(input$save_display_name, {
