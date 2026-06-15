@@ -2272,7 +2272,7 @@
       "checksum": "928b51825f7808b72569947687d6e53e"
     },
     "global.R": {
-      "checksum": "f99239938f59456af88f301784a2ad3d"
+      "checksum": "ab802148920d6992dee41bfa3a494bcd"
     },
     "methodology.R": {
       "checksum": "35ce6d271419364dbb5e23b2d5b5c2e2"
@@ -2284,19 +2284,19 @@
       "checksum": "f574b9b139f99bc8eec93445feafa271"
     },
     "program_screen.R": {
-      "checksum": "5ac3dea900f5561d55c2a76bc38da779"
+      "checksum": "849091d11d77935d873583681212a991"
     },
     "progress_screen.R": {
       "checksum": "8bc31e9669aa7372525335ea8ca9120a"
     },
     "server.R": {
-      "checksum": "8815a2799851c3d9e003e2c29051e2f8"
+      "checksum": "7776fe17576af2f27c5c8a987ec6c75c"
     },
     "ui.R": {
       "checksum": "ffcc4f06d3aef1e05e3d74b33448bd05"
     },
     "workout_screen.R": {
-      "checksum": "391fc5dd2fc09dd368e112d84aa3585f"
+      "checksum": "db18d7eb3c33f5a9a7115b17d5c7be30"
     },
     "workout_summary.R": {
       "checksum": "da45b5bd37d60dcda0a830d9384f4063"
