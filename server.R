@@ -3,7 +3,13 @@
 # ============================================================
 
 server <- function(input, output, session) {
-  
+
+  # Allow Shiny to transparently reconnect when the websocket drops
+  # (Posit Connect idle timeout, phone backgrounding, weak wifi).
+  # Without this the user has to manually refresh, which was their
+  # #1 complaint and also wipes any unsaved set-note drafts.
+  session$allowReconnect(TRUE)
+
   # ── Reactive state ─────────────────────────────────────────
   rv <- reactiveValues(
     # Auth

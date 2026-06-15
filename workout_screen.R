@@ -611,12 +611,15 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                       is_drop   <- !is.null(we$set_type) && !is.na(we$set_type) &&
                                    we$set_type == "drop_set" && s == we$prescribed_sets
 
-                      # Per-set note: defaults to that set's saved note (or the
-                      # most recent set's note as a pre-fill for the next set).
+                      # Per-set note default: only show the saved note for an
+                      # already-logged (or being-edited) set. Fresh sets
+                      # start blank — copying from the previous set was
+                      # confusing on drop sets where the lifter typically
+                      # wants a *different* observation than set 1.
+                      # Drafts in localStorage are restored client-side
+                      # without overwriting an already-saved note.
                       set_note_default <- tryCatch({
-                        raw <- if (is_logged || is_editing) log_entry$notes
-                          else if (s > 1 && length(we_logs) >= s - 1) we_logs[[s-1]]$notes
-                          else NULL
+                        raw <- if (is_logged || is_editing) log_entry$notes else NULL
                         n <- as.character(raw %||% "")
                         if (n %in% c("", "NA", "{}", "[]", "null")) "" else n
                       }, error = \(e) "")
@@ -773,15 +776,24 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           ),
                           tags$script(HTML(sprintf("
 (function() {
-  var key = 'catrack_note_%s_s%d';
-  var inp = document.getElementById('%s');
+  var key   = 'catrack_note_%s_s%d';
+  var inpId = '%s';
+  var inp   = document.getElementById(inpId);
   if (!inp) return;
   if (inp.value === '') {
     var saved = localStorage.getItem(key);
     if (saved) inp.value = saved;
   }
+  // Push current value to Shiny on init — the default text-input
+  // binding only flushes on blur, so without this, tapping the ✓
+  // button before the input loses focus (very common on mobile)
+  // would log the set with an empty note.
+  if (window.Shiny && Shiny.setInputValue)
+    Shiny.setInputValue(inpId, inp.value);
   inp.addEventListener('input', function() {
     localStorage.setItem(key, inp.value);
+    if (window.Shiny && Shiny.setInputValue)
+      Shiny.setInputValue(inpId, inp.value);
   });
 })();
 ", we$id, s, note_key)))
@@ -864,7 +876,20 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                 "border-radius:14px; padding:16px; font-size:16px;",
                 "font-weight:700; cursor:pointer; letter-spacing:0.02em;",
                 "box-shadow:0 4px 20px rgba(29,158,117,0.35);"),
-              onclick = "Shiny.setInputValue('finish_session', Math.random(), {priority:'event'})"),
+              # Push elapsed time from the JS-side localStorage timer
+              # before firing finish_session. The R-side
+              # rv$session_start_time is lost when the websocket
+              # reconnects mid-session, so without this the summary's
+              # Duration tile shows "—" for any session that
+              # disconnected (which on Posit Connect is most of them).
+              onclick = sprintf(
+                paste0("var k='catrack_ws_start_%s';",
+                       "var st=parseInt(localStorage.getItem(k),10);",
+                       "var el=(st&&!isNaN(st))?Math.floor((Date.now()-st)/1000):0;",
+                       "Shiny.setInputValue('session_elapsed_secs',el,{priority:'event'});",
+                       "Shiny.setInputValue('finish_session',Math.random(),{priority:'event'});",
+                       "localStorage.removeItem(k);"),
+                tryCatch(as.character(wo$id[1]), error = \(e) "unknown"))),
             tags$button(
               "← Close",
               style = paste0(
@@ -1438,11 +1463,18 @@ setup_workout_server <- function(input, output, session, rv) {
   observeEvent(input$finish_session, {
     if (is.null(rv$active_workout_id)) return()
 
-    duration_mins <- tryCatch(
-      if (!is.null(rv$session_start_time))
+    # Prefer the client-supplied elapsed time (driven by localStorage
+    # and therefore survives websocket reconnects). Fall back to the
+    # server-side start timestamp if the JS push didn't fire — e.g.
+    # the user finished the session within seconds of opening it.
+    duration_mins <- tryCatch({
+      secs <- suppressWarnings(as.integer(input$session_elapsed_secs %||% NA_integer_))
+      if (!is.na(secs) && secs > 0) {
+        as.integer(round(secs / 60))
+      } else if (!is.null(rv$session_start_time)) {
         as.integer(as.numeric(Sys.time() - rv$session_start_time, units = "mins"))
-      else NA_integer_,
-      error = \(e) NA_integer_)
+      } else NA_integer_
+    }, error = \(e) NA_integer_)
 
     completed_at_str <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ")
     update_data <- list(completed_at = completed_at_str)

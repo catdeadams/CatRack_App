@@ -420,9 +420,14 @@ login_page_ui <- function(mode = "login") {
             showBanner("⚠  You are offline — changes will sync when reconnected.");
           });
           // Shiny dispatches `shiny:disconnected` when the websocket
-          // drops (server restart, idle timeout, etc).
+          // drops (server restart, idle timeout, etc). With
+          // session$allowReconnect(TRUE) on the server, Shiny will
+          // auto-reconnect — we just show progress and hide the
+          // default modal that would otherwise block the screen.
           document.addEventListener("shiny:disconnected", function() {
-            showBanner("⚠  Disconnected from server — refresh to reconnect.");
+            showBanner("⟳  Reconnecting...");
+            var dlg = document.getElementById("ss-reconnecting-link");
+            if (dlg && dlg.style) dlg.style.display = "none";
           });
           document.addEventListener("shiny:connected", hideBanner);
           if (!navigator.onLine) showBanner();
