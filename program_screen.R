@@ -337,7 +337,7 @@ setup_program_server <- function(input, output, session, rv) {
     wid <- input$confirm_skip
     resp <- skip_workout(wid, rv$token)
     if (resp$status_code %in% c(200, 201, 204)) {
-      refresh_workouts()
+      if (!is.null(rv$program)) refresh_workouts()
       showNotification("Session skipped.", type = "message", duration = 2)
     } else {
       showNotification("Error skipping session.", type = "error")

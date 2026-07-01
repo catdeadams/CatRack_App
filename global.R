@@ -436,11 +436,9 @@ login_page_ui <- function(mode = "login") {
         // ── Supabase password recovery from URL hash ──────────────
         var h = window.location.hash + window.location.search;
         if (h.indexOf("type=recovery") !== -1) {
-          document.addEventListener("DOMContentLoaded", function() {
-            setTimeout(function() {
-              Shiny.setInputValue("url_recovery_token", h, {priority:"event"});
-            }, 800);
-          });
+          setTimeout(function() {
+            Shiny.setInputValue("url_recovery_token", h, {priority:"event"});
+          }, 800);
         }
       })();
     ')),
@@ -742,7 +740,7 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
     ),
     lapply(1:n_weeks, function(w) {
       week_workouts <- if (!is.null(workouts)) workouts[workouts$week_number == w, ] else NULL
-      block_char    <- c("A","B","C")[ceiling(w/4)]
+      block_char    <- c("A","B","C")[min(3L, ceiling(w/4))]
       is_current    <- isTRUE(w == current_week)
       
       div(class = "ct-week-row",

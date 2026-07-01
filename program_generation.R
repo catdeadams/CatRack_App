@@ -19,11 +19,11 @@ library(httr2)
 library(jsonlite)
 library(dplyr)
 
-# ── CREDENTIALS (standalone use only) ────────────────────────
-SUPABASE_URL         <- Sys.getenv("SUPABASE_URL",
-                                   "https://fowpjdsixqhgaqgdeiph.supabase.co")
-SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY",
-                                   "YOUR_SERVICE_ROLE_KEY_HERE")
+# When sourced from global.R these are already set; guard for standalone use.
+if (!exists("SUPABASE_URL") || nchar(SUPABASE_URL) == 0) {
+  SUPABASE_URL         <- Sys.getenv("SUPABASE_URL")
+  SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY")
+}
 
 # ── SUPABASE HELPERS ─────────────────────────────────────────
 sb_post <- function(table, data, upsert = FALSE) {

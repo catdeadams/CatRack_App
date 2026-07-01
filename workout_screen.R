@@ -554,11 +554,12 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                       tagList(
                         div(style = "font-size:11px; color:#888; margin-bottom:2px;",
                             paste0("Last: ",
-                                   if (!is.na(last$weight_lbs))
+                                   if ("weight_lbs" %in% names(last) && !is.na(last$weight_lbs))
                                      paste0(last$weight_lbs, " lbs × ")
                                    else "BW × ",
-                                   last$reps_completed, " reps",
-                                   if (!is.na(last$rpe_actual))
+                                   if ("reps_completed" %in% names(last)) last$reps_completed else "?",
+                                   " reps",
+                                   if ("rpe_actual" %in% names(last) && !is.na(last$rpe_actual))
                                      paste0(" @ RPE ", last$rpe_actual) else "")),
                         if (!is.na(suggested_wt) && suggested_wt > 0)
                           div(style = "font-size:11px; color:#5DCAA5; margin-bottom:8px;",
@@ -1282,14 +1283,18 @@ setup_workout_server <- function(input, output, session, rv) {
         rv$active_workout   <- data$workout
         rv$active_exercises <- data$exercises
         rv$last_perf_map    <- list()
-        if (!is.null(data$exercises)) {
-          for (i in seq_len(nrow(data$exercises))) {
-            eid  <- data$exercises$exercise_id[i]
-            last <- tryCatch(
-              fetch_last_performance(eid, rv$user_id, rv$token),
-              error = \(e) NULL)
-            if (!is.null(last) && nrow(last) > 0)
-              rv$last_perf_map[[eid]] <- last
+        if (!is.null(data$exercises) && nrow(data$exercises) > 0) {
+          ex_ids   <- paste(unique(data$exercises$exercise_id), collapse = ",")
+          all_last <- tryCatch(
+            sb_select("last_exercise_log",
+                      sprintf("?user_id=eq.%s&exercise_id=in.(%s)", rv$user_id, ex_ids),
+                      token = rv$token),
+            error = \(e) NULL)
+          if (!is.null(all_last) && is.data.frame(all_last) && nrow(all_last) > 0) {
+            for (i in seq_len(nrow(all_last))) {
+              eid <- all_last$exercise_id[i]
+              rv$last_perf_map[[eid]] <- all_last[i, ]
+            }
           }
         }
       }
@@ -1463,6 +1468,16 @@ setup_workout_server <- function(input, output, session, rv) {
   observeEvent(input$finish_session, {
     if (is.null(rv$active_workout_id)) return()
 
+    # Guard against accidental finish with zero sets logged
+    total_logged <- sum(vapply(names(rv$set_logs),
+                               function(weid) length(rv$set_logs[[weid]]),
+                               integer(1)))
+    if (total_logged == 0) {
+      showNotification("No sets logged yet. Log at least one set before finishing.",
+                       type = "warning", duration = 4)
+      return()
+    }
+
     # Prefer the client-supplied elapsed time (driven by localStorage
     # and therefore survives websocket reconnects). Fall back to the
     # server-side start timestamp if the JS push didn't fire — e.g.
@@ -1487,10 +1502,66 @@ setup_workout_server <- function(input, output, session, rv) {
 
     message(sprintf("Finish session response: %d", resp$status_code))
 
+    # ── PR detection ─────────────────────────────────────────────
+    tryCatch({
+      if (length(rv$set_logs) > 0 && !is.null(rv$active_exercises)) {
+        existing_prs <- rv$prs
+        for (we_id in names(rv$set_logs)) {
+          we_row <- rv$active_exercises[rv$active_exercises$id == we_id, ]
+          if (nrow(we_row) == 0) next
+          ex_id   <- we_row$exercise_id[1]
+          ex_name <- tryCatch(we_row$exercises[[1]]$name, error = \(e) NULL)
+          if (is.null(ex_name) || is.na(ex_name)) next
+
+          for (log in rv$set_logs[[we_id]]) {
+            w <- as.numeric(log$weight_lbs %||% 0)
+            r <- as.integer(log$reps_completed %||% 0)
+            if (is.na(w) || w <= 0 || is.na(r) || r <= 0) next
+            e1rm <- estimate_1rm(w, r)
+            if (is.na(e1rm) || e1rm <= 0) next
+
+            is_pr <- TRUE
+            if (!is.null(existing_prs) && nrow(existing_prs) > 0) {
+              ex_pr <- existing_prs[existing_prs$exercise_name == ex_name, ]
+              if (nrow(ex_pr) > 0) {
+                old_e1rm <- estimate_1rm(
+                  as.numeric(ex_pr$max_weight_lbs[1]),
+                  as.integer(ex_pr$reps_at_max_weight[1]))
+                if (!is.na(old_e1rm) && e1rm <= old_e1rm) is_pr <- FALSE
+              }
+            }
+
+            if (is_pr) {
+              sb_upsert("personal_records",
+                        list(user_id            = rv$user_id,
+                             exercise_name      = ex_name,
+                             exercise_id        = ex_id,
+                             max_weight_lbs     = w,
+                             reps_at_max_weight = as.integer(r),
+                             last_logged_at     = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ")),
+                        token = rv$token)
+              showNotification(
+                paste0("New PR! ", ex_name, " — ~", round(e1rm), " lbs est. 1RM"),
+                type = "message", duration = 5)
+              if (is.null(existing_prs)) {
+                existing_prs <- data.frame(exercise_name = ex_name,
+                                           max_weight_lbs = w,
+                                           reps_at_max_weight = r,
+                                           stringsAsFactors = FALSE)
+              } else {
+                existing_prs <- rbind(existing_prs,
+                  data.frame(exercise_name = ex_name, max_weight_lbs = w,
+                             reps_at_max_weight = r, stringsAsFactors = FALSE))
+              }
+            }
+          }
+        }
+      }
+    }, error = \(e) message("PR detection error: ", e$message))
+
     rv$all_logs <- NULL
     rv$prs      <- NULL
 
-    Sys.sleep(0.3)
     tryCatch({
       workouts <- sb_select("workouts",
                             sprintf("?program_id=eq.%s&order=week_number,session_number",

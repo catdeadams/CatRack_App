@@ -694,7 +694,7 @@ setup_profile_server <- function(input, output, session, rv) {
             pullup_baseline   = existing_pu,
             equipment         = new_equip,
             block_number      = as.integer(rv$program$block_number %||% 1L),
-            start_date        = Sys.Date()
+            start_date        = tryCatch(as.Date(rv$program$start_date), error = \(e) Sys.Date())
           )
 
           setProgress(0.9)

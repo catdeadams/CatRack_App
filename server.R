@@ -412,11 +412,6 @@ server <- function(input, output, session) {
   })
   
   # ── NAVIGATION ──────────────────────────────────────────────
-  observeEvent(input$nav_tab, {
-    rv$nav_tab <- input$nav_tab
-    rv$page    <- input$nav_tab
-  })
-  
   observeEvent(input$go_onboarding, {
     rv$ob_step <- 1L
     rv$page    <- "onboarding"
@@ -578,8 +573,11 @@ server <- function(input, output, session) {
                            
                            "programs" = div(class = "ct-content-with-nav",
                                             programs_page_ui(
-                                              active_program      = if (!is.null(rv$all_programs) && nrow(rv$all_programs) > 0)
-                                                rv$all_programs[rv$all_programs$is_active == TRUE, ][1, ] else NULL,
+                                              active_program      = if (!is.null(rv$all_programs) && nrow(rv$all_programs) > 0) {
+                                                ap <- rv$all_programs[as.logical(rv$all_programs$is_active) == TRUE &
+                                                                        !is.na(as.logical(rv$all_programs$is_active)), ]
+                                                if (nrow(ap) > 0) ap[1, ] else NULL
+                                              } else NULL,
                                               all_programs        = rv$all_programs,
                                               rename_program_id   = rv$rename_program_id,
                                               rename_current_name = rv$rename_current_name,
