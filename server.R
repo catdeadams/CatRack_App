@@ -546,7 +546,8 @@ server <- function(input, output, session) {
                                               prs               = rv$prs,
                                               program           = rv$program,
                                               workouts          = rv$workouts,
-                                              selected_exercise = rv$selected_exercise
+                                              selected_exercise = rv$selected_exercise,
+                                              metric            = rv$progress_metric %||% "e1rm"
                                             )
                            ),
                            
