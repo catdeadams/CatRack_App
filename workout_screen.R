@@ -653,6 +653,24 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           "font-size:11px; color:#FF9800; margin-bottom:8px;"),
                         "Last set: DROP SET — reduce weight ~50% and push for max reps"),
 
+                  # Isometric hold notice — for these the REPS field is SECONDS
+                  if (!is.null(we$set_type) && !is.na(we$set_type) && we$set_type == "isometric")
+                    div(style = paste0(
+                          "background:#07141a; border-left:2px solid #2979FF;",
+                          "border-radius:0 7px 7px 0; padding:6px 10px;",
+                          "font-size:11px; color:#5DA9FF; margin-bottom:8px;"),
+                        paste0("ISOMETRIC HOLD — enter SECONDS held in the reps field ",
+                               "(target ", we$rep_range_low, "–", we$rep_range_high,
+                               "s). Add load if you can hold past the range.")),
+
+                  # Plyometric notice — quality over fatigue
+                  if (!is.null(we$set_type) && !is.na(we$set_type) && we$set_type == "plyometric")
+                    div(style = paste0(
+                          "background:#0a1a10; border-left:2px solid #1D9E75;",
+                          "border-radius:0 7px 7px 0; padding:6px 10px;",
+                          "font-size:11px; color:#5DCAA5; margin-bottom:8px;"),
+                        "EXPLOSIVE — maximal intent, full recovery between sets. Stop if reps slow down; this is for power, not fatigue."),
+
                   # ── Set logging grid ─────────────────────────────────
                   div(
                     # Column headers

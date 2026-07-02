@@ -268,6 +268,9 @@ server <- function(input, output, session) {
   # ── ONBOARDING: goal selection ──────────────────────────────
   observeEvent(input$select_goal, {
     rv$ob_goal <- input$select_goal
+    # Running support is full-body only; lock the split so the summary and
+    # generator agree (the split step is hidden for this goal).
+    if (identical(rv$ob_goal, "running_support")) rv$ob_split <- "full_body"
   })
   
   # ── ONBOARDING: difficulty ──────────────────────────────────

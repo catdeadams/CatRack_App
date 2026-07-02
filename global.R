@@ -584,6 +584,15 @@ onboarding_page_ui <- function(step, values = list()) {
                                })
                            ),
                            div(class = "ct-section-title", "Split style"),
+                           # Running support is full-body only — the split choice
+                           # is fixed (concurrent-training evidence), so show a note
+                           # instead of the selector for that goal.
+                           if (isTRUE(values$goal == "running_support"))
+                             div(class = "ct-session-card today", style = "cursor:default;",
+                                 div(class = "ct-sess-type", "Full Body (fixed)"),
+                                 div(class = "ct-sess-date",
+                                     "Running support runs a low-volume, legs-biased full-body plan every session — no split to choose."))
+                           else
                            div(style = "display:flex; flex-direction:column; gap:8px;",
                                lapply(names(SPLIT_OPTIONS), function(label) {
                                  val    <- SPLIT_OPTIONS[[label]]

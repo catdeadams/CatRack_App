@@ -163,11 +163,42 @@ rir_to_rpe <- function(rir) max(5, min(10, 10 - rir))
   )
 }
 
-# Heavy main lift: rep ranges shift by goal
+# Heavy main lift: rep ranges shift by goal.
+# running_support uses 4-6 (heavy, low-volume) — the meta-analytic sweet
+# spot for improving running economy via tendon stiffness / recruitment
+# without the fatigue or hypertrophy of higher-rep work.
 .heavy_slot <- function(patterns, label, goal, sets = 3L, categories = NULL) {
-  rl <- if (goal == "strength")  3L else 5L
-  rh <- if (goal == "strength")  5L else 8L
+  rl <- switch(goal, strength = 3L, running_support = 4L, 5L)
+  rh <- switch(goal, strength = 5L, running_support = 6L, 8L)
   .make_slot("heavy", patterns, categories, label, sets, rl, rh, 180L)
+}
+
+# Plyometric / explosive slot — bodyweight jumps, low reps, full recovery.
+# The rep field is real reps; intent is maximal (quality over volume).
+# role = "plyometric" so budget-trimming keeps it (it's a priority for
+# runners), and instantiate_session assigns 0 warm-up sets.
+.plyo_slot <- function(patterns = c("plyometric"), label,
+                       categories = c("plyometric"), sets = 3L,
+                       reps_low = 5L, reps_high = 8L, rest_s = 120L,
+                       superset_group = NA) {
+  s <- .make_slot("plyometric", patterns, categories, label, sets,
+                  reps_low, reps_high, rest_s,
+                  superset_group = superset_group, prefer_compound = FALSE)
+  s$set_type <- "plyometric"
+  s
+}
+
+# Isometric hold slot — for tendon stiffness / soleus / core durability.
+# The rep field represents SECONDS to hold (set_type = "isometric"); the
+# workout screen shows a "hold" note so the number reads as time, not reps.
+.iso_hold_slot <- function(patterns, label, categories = c("isometric"),
+                           sets = 3L, secs_low = 20L, secs_high = 45L,
+                           rest_s = 90L, superset_group = NA) {
+  s <- .make_slot("isolation", patterns, categories, label, sets,
+                  secs_low, secs_high, rest_s,
+                  superset_group = superset_group, prefer_compound = FALSE)
+  s$set_type <- "isometric"
+  s
 }
 
 # Back-off using the heavy compound exercise
@@ -178,10 +209,11 @@ rir_to_rpe <- function(rir) max(5, min(10, 10 - rir))
              reuse_heavy = TRUE)
 }
 
-# Generic working compound
+# Generic working compound. running_support biases toward strength-y
+# 6-10 (unilateral leg strength for running), not hypertrophy 8-12.
 .compound_slot <- function(patterns, label, goal, categories = NULL, sets = 3L) {
-  rl <- switch(goal, strength = 5L, pull_up = 6L, 8L)
-  rh <- switch(goal, strength = 8L, pull_up = 10L, 12L)
+  rl <- switch(goal, strength = 5L, pull_up = 6L, running_support = 6L, 8L)
+  rh <- switch(goal, strength = 8L, pull_up = 10L, running_support = 10L, 12L)
   .make_slot("compound", patterns, categories, label, sets, rl, rh, 150L)
 }
 
@@ -585,120 +617,73 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
   }
 
   # ── RUNNING SUPPORT ──────────────────────────────────────
-  # Heavy single-leg emphasis (each leg trains independently to mimic
-  # running's unilateral load), eccentric hamstring work (Nordic-style
-  # — biggest documented hamstring-injury reducer for runners), split
-  # calf work (gastroc + soleus), and anti-rotation core. Direct
-  # bilateral squat work kept modest so heavy training doesn't compete
-  # with run mileage for recovery.
+  # Full-body only (forced upstream). Each session follows the evidence
+  # order: heavy compound → explosive/plyometric (the "complex" pairing
+  # that beats either alone) → single-leg strength → posterior-chain /
+  # eccentric-hamstring durability → calf (soleus + gastroc, with an
+  # isometric hold for tendon stiffness) → anti-rotation core / hip
+  # stability. Upper body is a single maintenance slot at most. Volume
+  # is deliberately low so lifting complements running, not competes.
   if (goal == "running_support") {
     return(switch(key,
-      "full_body_3_1" = list(  # Quad-dominant single-leg day
-        .heavy_slot(c("lunge","squat"), "Heavy Single Leg", goal,
-                    categories = "single_leg"),
-        .compound_slot(c("squat"), "Squat Variation", goal, sets = 2L),
+      # ── 3x / week ──────────────────────────────────────────
+      "full_body_3_1" = list(  # Heavy bilateral + jump (economy day)
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .plyo_slot(label = "Explosive Jump (squat / box jump)"),
+        .compound_slot(c("lunge","squat"), "Single Leg (split squat / step-up)",
+                       goal, categories = "single_leg"),
         .iso_slot(c("knee_flexion"), "Nordic / Eccentric Hamstring", c("leg_curl")),
-        .iso_slot(c("plantarflexion"), "Calves — standing (gastroc)", c("calves"),
-                  superset_group = "B"),
+        .iso_hold_slot(c("plantarflexion"), "Calf Raise Hold — standing (gastroc, sec)",
+                       superset_group = "B"),
         .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core",
                   c("core"), superset_group = "B")
       ),
       "full_body_3_2" = list(  # Posterior chain + hip stability
         .heavy_slot(c("hinge"), "Heavy Hinge / RDL", goal),
+        .plyo_slot(c("plyometric"), "Pogo / Ankle Hops (Achilles)",
+                   reps_low = 10L, reps_high = 15L),
         .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
         .compound_slot(c("abduction"), "Hip Abduction (band/cable)", goal,
                        categories = "glute_accessory"),
         .iso_slot(c("knee_flexion"), "Nordic / Eccentric Hamstring",
                   c("leg_curl"), is_drop = TRUE),
-        .iso_slot(c("plantarflexion"), "Calves — seated (soleus)", c("calves")),
+        .iso_hold_slot(c("plantarflexion"), "Calf Raise Hold — seated (soleus, sec)"),
         .iso_slot(c("anti_extension"), "Dead Bug / Pallof", c("core"))
       ),
-      "full_body_3_3" = list(  # Plyo + balance + upper maintenance
-        .compound_slot(c("squat","lunge"), "Step-up / Bulgarian Split", goal,
+      "full_body_3_3" = list(  # Single-leg + lateral power + upper maint
+        .compound_slot(c("squat","lunge"), "Bulgarian Split / Step-up", goal,
                        categories = "single_leg"),
+        .plyo_slot(c("plyometric"), "Lateral Skater / Bounding (frontal plane)"),
         .compound_slot(c("hinge"), "Single Leg RDL", goal),
-        .compound_slot(c("locomotion"), "Loaded Carry", goal, sets = 2L),
-        .iso_slot(c("plantarflexion"), "Calves — standing (gastroc)", c("calves"),
-                  is_drop = TRUE),
+        .iso_hold_slot(c("knee_extension","lunge"), "Wall Sit / Split-Squat Hold (sec)"),
         .iso_slot(c("rotation","spinal_flexion"), "Rotational Core", c("core")),
         .compound_slot(c("horizontal_pull"), "Row (upper maintenance)", goal, sets = 2L)
       ),
-      "full_body_2_1" = list(
-        .heavy_slot(c("lunge","squat"), "Heavy Single Leg", goal,
-                    categories = "single_leg"),
+      # ── 2x / week (condensed, still hits every base) ───────
+      "full_body_2_1" = list(  # Heavy strength + jump + posterior chain
+        .heavy_slot(c("squat"), "Heavy Squat", goal),
+        .plyo_slot(label = "Explosive Jump (squat / box jump)"),
+        .compound_slot(c("lunge","squat"), "Single Leg (split squat / step-up)",
+                       goal, categories = "single_leg"),
         .compound_slot(c("hinge"), "Hinge / RDL", goal),
-        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
         .iso_slot(c("knee_flexion"), "Nordic / Eccentric Hamstring", c("leg_curl")),
-        .iso_slot(c("plantarflexion"), "Calves — gastroc", c("calves"),
-                  superset_group = "B"),
+        .iso_hold_slot(c("plantarflexion"), "Calf Raise Hold — gastroc (sec)",
+                       superset_group = "B"),
         .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core",
                   c("core"), superset_group = "B")
       ),
-      "full_body_2_2" = list(
+      "full_body_2_2" = list(  # Hinge + hip stability + Achilles plyo
         .heavy_slot(c("hinge"), "Heavy Hinge / Deadlift", goal),
-        .compound_slot(c("squat","lunge"), "Step-up / Bulgarian Split", goal,
+        .plyo_slot(c("plyometric"), "Pogo / Ankle Hops (Achilles)",
+                   reps_low = 10L, reps_high = 15L),
+        .compound_slot(c("squat","lunge"), "Bulgarian Split / Step-up", goal,
                        categories = "single_leg"),
         .compound_slot(c("abduction"), "Hip Abduction", goal,
                        categories = "glute_accessory"),
-        .compound_slot(c("locomotion"), "Loaded Carry", goal, sets = 2L),
-        .iso_slot(c("plantarflexion"), "Calves — seated (soleus)", c("calves"),
-                  is_drop = TRUE),
-        .iso_slot(c("anti_extension"), "Dead Bug / Plank", c("core"))
-      ),
-      "upper_lower_4_1" = list(
-        .compound_slot(c("horizontal_push"), "Chest Press (maint)", goal, sets = 2L),
-        .compound_slot(c("horizontal_pull"), "Row", goal, sets = 2L),
-        .compound_slot(c("vertical_push"), "Overhead Press (maint)", goal, sets = 2L),
-        .iso_slot(c("spinal_flexion","anti_extension"), "Core", c("core"))
-      ),
-      "upper_lower_4_2" = list(
-        .heavy_slot(c("squat"), "Heavy Squat", goal),
-        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
-        .iso_slot(c("knee_flexion"), "Leg Curl", c("leg_curl")),
-        .iso_slot(c("plantarflexion"), "Calves — standing", c("calves"), superset_group = "B"),
-        .iso_slot(c("spinal_flexion"), "Core", c("core"), superset_group = "B")
-      ),
-      "upper_lower_4_3" = list(
-        .compound_slot(c("horizontal_pull"), "Row", goal),
-        .compound_slot(c("incline_push"), "Incline Push (maint)", goal, sets = 2L),
-        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt")),
-        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core", c("core"))
-      ),
-      "upper_lower_4_4" = list(
-        .heavy_slot(c("hinge"), "Heavy Hinge", goal),
-        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
-        .compound_slot(c("lunge","squat"), "Single Leg", goal, categories = "single_leg"),
-        .iso_slot(c("plantarflexion"), "Calves — seated (soleus)", c("calves"), is_drop = TRUE),
-        .iso_slot(c("abduction"), "Hip Abduction", c("glute_accessory"))
-      ),
-      "upper_lower_3_1" = list(  # LOWER (running's main lift day)
-        .heavy_slot(c("lunge","squat"), "Heavy Single Leg", goal,
-                    categories = "single_leg"),
-        .compound_slot(c("hinge"), "Hinge / RDL", goal),
-        .compound_slot(c("hip_extension"), "Hip Thrust", goal, categories = "hip_thrust"),
-        .iso_slot(c("knee_flexion"), "Nordic / Eccentric Hamstring", c("leg_curl"),
-                  is_drop = TRUE),
-        .iso_slot(c("plantarflexion"), "Calves — gastroc", c("calves"))
-      ),
-      "upper_lower_3_2" = list(  # UPPER — maintenance, not regression
-        .compound_slot(c("horizontal_push"), "Chest Press (maintenance)", goal,
-                       sets = 2L),
-        .compound_slot(c("horizontal_pull"), "Row", goal),
-        .compound_slot(c("vertical_push"), "Overhead Press (maintenance)", goal,
-                       sets = 2L),
-        .iso_slot(c("rear_delt_fly"), "Rear Delt", c("rear_delt"),
-                  superset_group = "A"),
-        .iso_slot(c("anti_extension","rotation"), "Anti-rotation Core", c("core"),
-                  superset_group = "A")
-      ),
-      "upper_lower_3_3" = list(  # FULL BODY — running specific
-        .compound_slot(c("squat","lunge"), "Step-up / Bulgarian Split", goal,
-                       categories = "single_leg"),
-        .compound_slot(c("hinge"), "Single Leg RDL", goal),
-        .compound_slot(c("locomotion"), "Loaded Carry", goal, sets = 2L),
-        .compound_slot(c("horizontal_pull"), "Row (upper maintenance)", goal, sets = 2L),
-        .iso_slot(c("plantarflexion"), "Calves — soleus (seated)", c("calves")),
-        .iso_slot(c("rotation","spinal_flexion"), "Rotational Core", c("core"))
+        .iso_hold_slot(c("plantarflexion"), "Calf Raise Hold — soleus (seated, sec)",
+                       superset_group = "B"),
+        .iso_slot(c("anti_extension"), "Dead Bug / Plank", c("core"),
+                  superset_group = "B")
       ),
       list()
     ))
@@ -1100,6 +1085,17 @@ generate_program <- function(
               block_number, c("A","B","C")[((block_number - 1L) %% 3L) + 1L]))
   cat(sprintf("Start:      %s\n", start_date))
   cat("==========================================================\n\n")
+
+  # ── Running support is full-body only ────────────────────
+  # The concurrent-training evidence is clear: keep lifting low-volume,
+  # full-body, and legs-biased so it complements running instead of
+  # competing with it for recovery. An upper/lower split would double
+  # upper-body volume the runner doesn't need. Force it regardless of
+  # what split the user picked.
+  if (goal == "running_support" && split_style != "full_body") {
+    cat("  [info] running_support forces full_body split\n")
+    split_style <- "full_body"
+  }
 
   # ── Equipment ────────────────────────────────────────────
   if (is.null(equipment)) {
