@@ -155,6 +155,66 @@ fetch_last_performance <- function(exercise_id, user_id, token) {
     error = \(e) NULL)
 }
 
+# ── VARIANT-AWARE LAST PERFORMANCE ──────────────────────────
+# The same lift can appear twice in a session (e.g. a heavy top-set and a
+# lighter back-off set) as two workout_exercises rows sharing exercise_id but
+# differing by rep range. Keying "last performance" on exercise_id alone made
+# the heavy slot show the back-off's numbers (and vice versa). This matches
+# each active slot to its OWN history by (exercise_id, rep_range_low), so the
+# heavy slot pre-fills from the previous heavy, the back-off from the back-off.
+# Returns a list keyed by the *current* workout_exercise id (we$id), each a
+# data.frame of recent working sets (newest first) for that variant.
+fetch_variant_last_perf <- function(active_we, user_id, token) {
+  ex_ids <- unique(active_we$exercise_id)
+  ex_ids <- ex_ids[!is.na(ex_ids)]
+  if (length(ex_ids) == 0) return(list())
+  eid_list <- paste0("(", paste(ex_ids, collapse = ","), ")")
+
+  # Every slot (this week + all prior weeks) for these exercises + its rep range
+  slots <- tryCatch(
+    sb_select("workout_exercises",
+              sprintf("?exercise_id=in.%s&select=id,exercise_id,rep_range_low", eid_list),
+              token = token),
+    error = \(e) NULL)
+  if (is.null(slots) || nrow(slots) == 0) return(list())
+
+  cur_ids <- active_we$id
+  prior   <- slots[!(slots$id %in% cur_ids), ]
+  if (nrow(prior) == 0) return(list())
+  we_list <- paste0("(", paste(prior$id, collapse = ","), ")")
+
+  logs <- tryCatch(
+    sb_select("workout_set_logs",
+              sprintf(paste0("?user_id=eq.%s&is_warmup=eq.false&workout_exercise_id=in.%s",
+                             "&select=workout_exercise_id,weight_lbs,reps_completed,rpe_actual,logged_at",
+                             "&order=logged_at.desc&limit=500"),
+                      user_id, we_list),
+              token = token),
+    error = \(e) NULL)
+  if (is.null(logs) || nrow(logs) == 0) return(list())
+
+  # Tag each log with the exercise_id + rep range of the slot it belongs to
+  slot_eid <- setNames(prior$exercise_id, prior$id)
+  slot_rl  <- setNames(suppressWarnings(as.integer(prior$rep_range_low)), prior$id)
+  logs$h_eid <- slot_eid[as.character(logs$workout_exercise_id)]
+  logs$h_rl  <- slot_rl [as.character(logs$workout_exercise_id)]
+
+  cols <- c("weight_lbs", "reps_completed", "rpe_actual", "logged_at")
+  out  <- list()
+  for (j in seq_len(nrow(active_we))) {
+    we_row <- active_we[j, ]
+    eid    <- we_row$exercise_id
+    rl     <- suppressWarnings(as.integer(we_row$rep_range_low))
+    same_ex <- which(!is.na(logs$h_eid) & logs$h_eid == eid)
+    if (length(same_ex) == 0) next
+    # Prefer the same rep-range variant; fall back to any prior set of this lift
+    variant <- same_ex[!is.na(logs$h_rl[same_ex]) & logs$h_rl[same_ex] == rl]
+    idxs    <- if (length(variant) > 0) variant else same_ex
+    out[[we_row$id]] <- logs[head(idxs, 10), cols]
+  }
+  out
+}
+
 # ── SUGGESTED WEIGHT (Nippard-style intensity-from-RIR scaling) ──
 # Given last logged performance, estimate 1RM (Epley/Brzycki blend)
 # and scale it to the current block's RIR + the rep range midpoint.
@@ -173,10 +233,17 @@ suggest_weight <- function(last_log, target_reps, week_number) {
   e1rm <- tryCatch(estimate_1rm(w, r), error = \(e) NA_real_)
   if (is.null(e1rm) || is.na(e1rm) || e1rm <= 0) return(NA_real_)
 
-  block <- tryCatch(c("A","B","C")[ceiling(as.integer(week_number) / 4)],
-                    error = \(e) "B")
-  rir <- tryCatch(BLOCK_PROFILES[[block]]$rir_target, error = \(e) 2.0)
-  if (is.null(rir) || is.na(rir)) rir <- 2.0
+  # Resolve the *effective* RIR for this exact week — block target PLUS the
+  # week-in-block modifier (base -> build -> peak -> deload). resolve_rir()
+  # lives in program_generation.R (sourced first). Previously we read only
+  # the block target, so the suggested load stayed flat for weeks 1-3 of a
+  # block even though the plan calls for progressive overload.
+  wk    <- suppressWarnings(as.integer(week_number))
+  block <- tryCatch(c("A","B","C")[ceiling(wk / 4)], error = \(e) "B")
+  wib   <- tryCatch(((wk - 1L) %% 4L) + 1L,           error = \(e) 2L)
+  rir   <- tryCatch(resolve_rir(block, wib),          error = \(e) NA_real_)
+  if (is.null(rir) || is.na(rir))
+    rir <- tryCatch(BLOCK_PROFILES[[block]]$rir_target %||% 2.0, error = \(e) 2.0)
 
   effort_reps <- as.numeric(target_reps) + as.numeric(rir)
   pct_1rm     <- 1 / (1 + effort_reps / 30)
@@ -436,7 +503,9 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
             # reps fall within this exercise's target range. Falls back to
             # the most recent log if no rep-matched entry exists.
             last <- tryCatch({
-              df <- last_perf_map[[we$exercise_id]]
+              # Keyed by this slot's id (we$id) so heavy and back-off variants
+              # of the same lift pull their own history, not each other's.
+              df <- last_perf_map[[we$id]]
               if (is.null(df) || nrow(df) == 0) {
                 NULL
               } else {
@@ -645,8 +714,19 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           if (!is.na(sugg) && sugg > 0) sugg else last$weight_lbs
                         }
                         else NA
+                      # Rep nudge (double progression): suggest one more rep than
+                      # last time, toward the top of the range. Once you cap the
+                      # range, reset to the bottom (the load suggestion has stepped
+                      # up by then). Editing/logged sets keep their stored value.
                       def_reps <- if (is_logged || is_editing) log_entry$reps_completed
-                        else if (!is.null(last)) last$reps_completed
+                        else if (!is.null(last)) {
+                          lr <- suppressWarnings(as.integer(last$reps_completed))
+                          lo <- suppressWarnings(as.integer(we$rep_range_low))
+                          hi <- suppressWarnings(as.integer(we$rep_range_high))
+                          if (!is.na(lr) && !is.na(lo) && !is.na(hi)) {
+                            if (lr >= hi) lo else min(hi, lr + 1L)
+                          } else if (!is.na(lr)) lr else we$rep_range_low
+                        }
                         else we$rep_range_low
                       def_rpe  <- tryCatch({
                         raw <- if (is_logged || is_editing) log_entry$rpe_actual
@@ -1284,18 +1364,9 @@ setup_workout_server <- function(input, output, session, rv) {
         rv$active_exercises <- data$exercises
         rv$last_perf_map    <- list()
         if (!is.null(data$exercises) && nrow(data$exercises) > 0) {
-          ex_ids   <- paste(unique(data$exercises$exercise_id), collapse = ",")
-          all_last <- tryCatch(
-            sb_select("last_exercise_log",
-                      sprintf("?user_id=eq.%s&exercise_id=in.(%s)", rv$user_id, ex_ids),
-                      token = rv$token),
-            error = \(e) NULL)
-          if (!is.null(all_last) && is.data.frame(all_last) && nrow(all_last) > 0) {
-            for (i in seq_len(nrow(all_last))) {
-              eid <- all_last$exercise_id[i]
-              rv$last_perf_map[[eid]] <- all_last[i, ]
-            }
-          }
+          rv$last_perf_map <- tryCatch(
+            fetch_variant_last_perf(data$exercises, rv$user_id, rv$token),
+            error = \(e) list())
         }
       }
 
