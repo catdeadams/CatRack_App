@@ -161,12 +161,38 @@ time_ago <- function(ts_str) {
   }, error = \(e) "")
 }
 
+# Extract the exercise name for log row i from the embedded join.
+# PostgREST's to-one embed comes back (via jsonlite simplifyDataFrame) as a
+# nested DATA.FRAME: logs$workout_exercises has columns (exercise_id, exercises),
+# and logs$workout_exercises$exercises$name is a plain vector indexed by row.
+# The old code used [[i]] which indexes the nested COLUMN, not the row, so it
+# returned NA for everything. Handle both the nested-df and list-column shapes.
 get_ex_name <- function(logs, i) {
   tryCatch({
-    we <- logs$workout_exercises[[i]]
-    if (is.list(we) && !is.null(we$exercises)) we$exercises$name
-    else if (is.data.frame(we) && "exercises" %in% names(we)) we$exercises$name[[1]]
-    else NA_character_
+    we <- logs$workout_exercises
+    if (is.null(we)) return(NA_character_)
+
+    # Shape A — fully simplified nested data.frames (the normal case)
+    if (is.data.frame(we)) {
+      ex <- we$exercises
+      if (is.data.frame(ex) && "name" %in% names(ex)) return(as.character(ex$name[i]))
+      if (is.list(ex)) {
+        nm <- tryCatch(ex[[i]]$name, error = \(e) NULL)
+        if (!is.null(nm)) return(as.character(nm)[1])
+      }
+      return(NA_character_)
+    }
+
+    # Shape B — list column, one entry per row (defensive fallback)
+    if (is.list(we)) {
+      wi <- we[[i]]
+      if (is.null(wi)) return(NA_character_)
+      ex <- tryCatch(wi$exercises, error = \(e) NULL)
+      if (is.data.frame(ex) && "name" %in% names(ex)) return(as.character(ex$name[1]))
+      nm <- tryCatch(ex$name, error = \(e) NULL)
+      if (!is.null(nm)) return(as.character(nm)[1])
+    }
+    NA_character_
   }, error = \(e) NA_character_)
 }
 
@@ -261,11 +287,11 @@ plot_exercise_progress <- function(sessions, exercise_name, metric = "e1rm") {
                   text = hover, hoverinfo = "text") |>
     plotly::layout(
       paper_bgcolor = "#161616", plot_bgcolor = "#161616",
-      font  = list(color = "#888", size = 11, family = "system-ui,sans-serif"),
-      xaxis = list(gridcolor = "#1e1e1e", zeroline = FALSE, tickformat = "%b %d",
-                   title = "", color = "#555"),
-      yaxis = list(gridcolor = "#1e1e1e", zeroline = FALSE, title = yttl,
-                   titlefont = list(color = "#555", size = 11), color = "#555"),
+      font  = list(color = "#cfcfcf", size = 11, family = "system-ui,sans-serif"),
+      xaxis = list(gridcolor = "#242424", zeroline = FALSE, tickformat = "%b %d",
+                   title = "", color = "#aaa"),
+      yaxis = list(gridcolor = "#242424", zeroline = FALSE, title = yttl,
+                   titlefont = list(color = "#aaa", size = 11), color = "#aaa"),
       showlegend = FALSE,
       hoverlabel = list(bgcolor = "#1e1e1e", bordercolor = "#0F6E56", align = "left",
                         font = list(color = "#f0f0f0", size = 12)),
@@ -355,14 +381,14 @@ plot_weekly_volume <- function(logs_df) {
   plotly::plot_ly(weekly, x=~week, y=~total_volume, type="bar",
                   text=~paste0(format(week,"%b %d"),"<br>",format(round(total_volume),big.mark=",")," lbs"),
                   hoverinfo="text",
-                  marker=list(color="rgba(29,158,117,0.55)", line=list(color="#1D9E75",width=1))) |>
+                  marker=list(color="rgba(29,158,117,0.8)", line=list(color="#5DCAA5",width=1))) |>
     plotly::layout(
       paper_bgcolor="#161616", plot_bgcolor="#161616",
-      font=list(color="#888",size=11,family="system-ui,sans-serif"),
-      xaxis=list(gridcolor="#1e1e1e",zeroline=FALSE,tickformat="%b %d",title="",
-                 color="#555"),
-      yaxis=list(gridcolor="#1e1e1e",zeroline=FALSE,title="Volume (lbs)",
-                 titlefont=list(color="#555",size=11), color="#555"),
+      font=list(color="#cfcfcf",size=11,family="system-ui,sans-serif"),
+      xaxis=list(gridcolor="#242424",zeroline=FALSE,tickformat="%b %d",title="",
+                 color="#aaa"),
+      yaxis=list(gridcolor="#242424",zeroline=FALSE,title="Volume (lbs)",
+                 titlefont=list(color="#aaa",size=11), color="#aaa"),
       hoverlabel=list(bgcolor="#1e1e1e",bordercolor="#0F6E56",font=list(color="#f0f0f0",size=12)),
       margin=list(t=10,b=40,l=55,r=15)
     ) |> plotly::config(displayModeBar=FALSE)
