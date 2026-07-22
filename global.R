@@ -365,6 +365,22 @@ login_page_ui <- function(mode = "login") {
         }
         tryRestore();
 
+        // ── Keep-alive heartbeat ──────────────────────────────────
+        // Posit Connect drops idle websocket connections. Mid-workout a
+        // user can rest 2-3 min between sets with no client->server
+        // traffic, so the socket goes idle and disconnects — bouncing
+        // them out of the session. A tiny periodic input keeps the
+        // connection busy. Window-scoped so re-renders do not stack
+        // multiple intervals. (Mobile browsers pause timers when the
+        // screen locks, which is fine — that is not an active workout.)
+        if (!window._catrackHeartbeat) {
+          window._catrackHeartbeat = setInterval(function() {
+            if (window.Shiny && Shiny.setInputValue) {
+              Shiny.setInputValue("client_heartbeat", Date.now(), {priority:"event"});
+            }
+          }, 30000);
+        }
+
         if (!window._catrackHandlersRegistered) {
           window._catrackHandlersRegistered = true;
 
@@ -816,25 +832,7 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
   )
 }
 
-bottom_nav_ui <- function(active = "dashboard") {
-  nav_item <- function(id, icon, label) {
-    is_active <- identical(as.character(active %||% ""), id)
-    tags$button(
-      class   = trimws(paste("ct-nav-btn", if (is_active) "active" else "")),
-      onclick = sprintf("Shiny.setInputValue('nav_tab','%s',{priority:'event'})", id),
-      div(class = "nav-icon", icon),
-      label
-    )
-  }
-  div(class = "ct-bottom-nav",
-      nav_item("dashboard", "📅", "Program"),
-      nav_item("progress",  "📊", "Progress"),
-      nav_item("friends",   "🏆", "Friends")
-  )
-}
-
-# ── REDESIGN: Replace bottom_nav_ui with SVG icons ───────────
-# Overrides the function defined above
+# ── Bottom navigation (SVG icons) ────────────────────────────
 nav_icon_program  <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><rect x="7" y="14" width="3" height="3" rx="0.5"/></svg>'
 nav_icon_progress <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>'
 nav_icon_friends  <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/></svg>'

@@ -27,11 +27,17 @@ estimate_1rm <- function(weight, reps) {
 }
 
 fetch_all_logs <- function(user_id, token) {
-  sb_select("workout_set_logs",
+  # Fetch newest-first so the row cap drops the OLDEST history, not the most
+  # recent (an asc order + cap silently hid new sessions once the cap was
+  # hit). Downstream code assumes ascending order (last row = most recent),
+  # so re-sort ascending before returning.
+  logs <- sb_select("workout_set_logs",
             sprintf(paste0("?user_id=eq.%s&is_warmup=eq.false",
                            "&select=*,workout_exercises(exercise_id,exercises(name,category,primary_muscles))",
-                           "&order=logged_at.asc&limit=3000"), user_id),
+                           "&order=logged_at.desc&limit=5000"), user_id),
             token = token)
+  if (is.null(logs) || nrow(logs) == 0) return(logs)
+  logs[order(as.POSIXct(logs$logged_at, tz = "UTC")), , drop = FALSE]
 }
 
 fetch_prs <- function(user_id, token) {
@@ -450,6 +456,13 @@ progress_screen_ui <- function(logs, prs, program=NULL, workouts=NULL,
       sort(unique(na.omit(sapply(seq_len(nrow(logs)), \(i) get_ex_name(logs, i))))),
       error=\(e) character(0))
   }
+  # Resolve the effective selection using the SAME fallback the server-side
+  # exercise_sessions() reactive uses (most-recently-logged exercise), so the
+  # dropdown and the chart always agree — even on first open when
+  # selected_exercise is still NULL.
+  sel <- selected_exercise %||%
+    tryCatch(get_ex_name(logs, nrow(logs)), error = \(e) NULL)
+  if (!is.null(sel) && !(sel %in% ex_names)) sel <- NULL
   tagList(
     div(style="margin-bottom:16px;",
         div(style="font-size:18px;font-weight:700;color:#f0f0f0;","Progress"),
@@ -465,25 +478,15 @@ progress_screen_ui <- function(logs, prs, program=NULL, workouts=NULL,
     div(style="background:#161616;border-radius:12px;padding:16px;margin-bottom:12px;border:1px solid #222;",
         div(class="ct-section-title","EXERCISE PROGRESS"),
         if (length(ex_names) > 0) {
-          metric_btn <- function(m, lbl) tags$button(
-            lbl,
-            style = paste0(
-              "flex:1;padding:7px;border-radius:7px;font-size:12px;cursor:pointer;",
-              if (identical(metric, m))
-                "background:#0a1f16;border:1px solid #1D9E75;color:#5DCAA5;font-weight:700;"
-              else
-                "background:#1e1e1e;border:1px solid #262626;color:#888;font-weight:400;"),
-            onclick = sprintf("Shiny.setInputValue('progress_metric','%s',{priority:'event'})", m))
           tagList(
             div(style="margin-bottom:10px;",
                 tags$select(id="selected_exercise",
                             style="background:#1e1e1e;border:1.5px solid #262626;color:#f0f0f0;border-radius:8px;padding:8px 10px;font-size:13px;width:100%;",
                             onchange="Shiny.setInputValue('select_progress_exercise',this.value,{priority:'event'})",
-                            lapply(ex_names, \(nm) tags$option(value=nm, selected=identical(nm,selected_exercise), nm)))),
-            # Metric toggle — bodyweight exercises auto-track reps regardless
-            div(style="display:flex;gap:6px;margin-bottom:12px;",
-                metric_btn("e1rm",   "Est. 1RM"),
-                metric_btn("weight", "Heaviest")),
+                            lapply(ex_names, \(nm) tags$option(value=nm, selected=identical(nm, sel), nm)))),
+            # Metric toggle rendered as its own output so clicking it updates
+            # the highlight without re-rendering (and resetting) the dropdown.
+            uiOutput("progress_metric_toggle"),
             uiOutput("exercise_progress_summary"),
             plotly::plotlyOutput("plot_exercise_progress", height="240px"),
             div(style="font-size:11px;color:#444;margin-top:8px;",
@@ -743,6 +746,25 @@ setup_progress_server <- function(input, output, session, rv) {
   observeEvent(input$select_progress_exercise, { rv$selected_exercise <- input$select_progress_exercise })
   observeEvent(input$progress_metric, {
     if (input$progress_metric %in% c("e1rm", "weight")) rv$progress_metric <- input$progress_metric
+  })
+
+  # Metric toggle (Est. 1RM / Heaviest). Its own output so a click updates
+  # only this control + the chart — not the whole page — which is what used
+  # to rebuild the exercise dropdown and lose the user's selection.
+  output$progress_metric_toggle <- renderUI({
+    metric <- rv$progress_metric %||% "e1rm"
+    metric_btn <- function(m, lbl) tags$button(
+      lbl,
+      style = paste0(
+        "flex:1;padding:7px;border-radius:7px;font-size:12px;cursor:pointer;",
+        if (identical(metric, m))
+          "background:#0a1f16;border:1px solid #1D9E75;color:#5DCAA5;font-weight:700;"
+        else
+          "background:#1e1e1e;border:1px solid #262626;color:#888;font-weight:400;"),
+      onclick = sprintf("Shiny.setInputValue('progress_metric','%s',{priority:'event'})", m))
+    div(style = "display:flex;gap:6px;margin-bottom:12px;",
+        metric_btn("e1rm",   "Est. 1RM"),
+        metric_btn("weight", "Heaviest"))
   })
 
   output$plot_weekly_volume <- plotly::renderPlotly({

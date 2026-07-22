@@ -100,7 +100,7 @@ make_session_timer_js <- function(workout_id) {
 fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) {
   we_ids <- tryCatch(
     sb_select("workout_exercises",
-              sprintf("?exercise_id=eq.%s&select=id", exercise_id),
+              sprintf("?exercise_id=eq.%s&select=id&limit=1000", exercise_id),
               token = token),
     error = \(e) NULL)
   if (is.null(we_ids) || nrow(we_ids) == 0) return(NULL)
@@ -109,7 +109,7 @@ fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) 
     sb_select("workout_set_logs",
               sprintf(paste0("?user_id=eq.%s&is_warmup=eq.false",
                              "&workout_exercise_id=in.%s",
-                             "&select=weight_lbs,reps_completed,rpe_actual,notes,logged_at",
+                             "&select=weight_lbs,reps_completed,rpe_actual,notes,set_number,logged_at",
                              "&order=logged_at.desc&limit=60"),
                       user_id, id_list),
               token = token),
@@ -119,13 +119,26 @@ fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) 
   logs$wt    <- as.numeric(logs$weight_lbs)
   logs$reps  <- as.integer(logs$reps_completed)
   logs$rpe   <- as.numeric(logs$rpe_actual)
-  dates <- unique(logs$date[order(logs$date, decreasing = TRUE)])[seq_len(n_sessions)]
+  # head() rather than [seq_len()] so a user with < n_sessions of history
+  # doesn't get NA-padded rows.
+  dates <- head(unique(logs$date[order(logs$date, decreasing = TRUE)]), n_sessions)
   do.call(rbind, lapply(dates, function(d) {
     day  <- logs[logs$date == d, ]
     best <- day[which.max(replace(day$wt, is.na(day$wt), -Inf)), ]
+    # Collect EVERY set's note for the day (not just the best set's), in
+    # set order, labelling by set number when there's more than one.
     note_val <- tryCatch({
-      n <- as.character(best$notes %||% "")
-      if (n %in% c("", "NA", "{}", "[]", "null")) NA_character_ else n
+      sn  <- suppressWarnings(as.integer(day$set_number))
+      ord <- order(replace(sn, is.na(sn), .Machine$integer.max))
+      picks <- character(0)
+      for (k in ord) {
+        n <- trimws(as.character(day$notes[k] %||% ""))
+        if (n %in% c("", "NA", "NULL", "{}", "[]", "null")) next
+        picks <- c(picks, if (!is.na(sn[k])) paste0("Set ", sn[k], ": ", n) else n)
+      }
+      if (length(picks) == 0) NA_character_
+      else if (length(picks) == 1) sub("^Set [0-9]+: ", "", picks[1])
+      else paste(picks, collapse = "\n")
     }, error = \(e) NA_character_)
     data.frame(date   = d, wt = best$wt, reps = best$reps,
                rpe    = best$rpe, n_sets = nrow(day),
@@ -139,7 +152,7 @@ fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) 
 fetch_last_performance <- function(exercise_id, user_id, token) {
   we_ids <- tryCatch(
     sb_select("workout_exercises",
-              sprintf("?exercise_id=eq.%s&select=id", exercise_id),
+              sprintf("?exercise_id=eq.%s&select=id&limit=1000", exercise_id),
               token = token),
     error = \(e) NULL)
   if (is.null(we_ids) || nrow(we_ids) == 0) return(NULL)
@@ -929,7 +942,8 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                                                       if (r$n_sets > 1) paste0("  (", r$n_sets, " sets)") else ""))),
                                       if (has_note)
                                         div(style = "font-size:10px; color:#666; font-style:italic; margin-top:2px;",
-                                            r$note)
+                                            lapply(strsplit(r$note, "\n", fixed = TRUE)[[1]],
+                                                   function(ln) div(style = "margin-top:1px;", ln)))
                                   )
                                 })
                             )
@@ -1649,7 +1663,9 @@ setup_workout_server <- function(input, output, session, rv) {
     }, error = \(e) message("PR detection error: ", e$message))
 
     rv$all_logs <- NULL
-    rv$prs      <- NULL
+    # Refresh PRs from the DB (rather than nulling) so the Progress tab and
+    # the next session's PR detection both see freshly-written records.
+    rv$prs <- tryCatch(fetch_prs(rv$user_id, rv$token), error = \(e) NULL)
 
     tryCatch({
       workouts <- sb_select("workouts",

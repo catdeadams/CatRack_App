@@ -149,7 +149,12 @@ server <- function(input, output, session) {
       # Pre-load all programs for the programs page
       rv$all_programs <- tryCatch(
         fetch_all_programs(rv$user_id, rv$token), error = \(e) NULL)
-      
+
+      # Pre-load PRs so finish-session PR detection has a baseline even if
+      # the user never opens the Progress tab (otherwise every set on the
+      # first session gets flagged as a PR and can overwrite real records).
+      rv$prs <- tryCatch(fetch_prs(rv$user_id, rv$token), error = \(e) NULL)
+
       rv$streak  <- calculate_streak(rv$workouts, rv$program)
       rv$page    <- "dashboard"
       rv$nav_tab <- "dashboard"
@@ -549,8 +554,14 @@ server <- function(input, output, session) {
                                               prs               = rv$prs,
                                               program           = rv$program,
                                               workouts          = rv$workouts,
-                                              selected_exercise = rv$selected_exercise,
-                                              metric            = rv$progress_metric %||% "e1rm"
+                                              # Isolated: changing the selected exercise or metric
+                                              # updates the child outputs (chart/summary/toggle)
+                                              # without re-rendering this whole page — which is
+                                              # what used to rebuild the <select> and drop the
+                                              # user's choice. The native dropdown keeps its own
+                                              # value, and the metric toggle is its own output.
+                                              selected_exercise = isolate(rv$selected_exercise),
+                                              metric            = isolate(rv$progress_metric %||% "e1rm")
                                             )
                            ),
                            
@@ -659,14 +670,36 @@ server <- function(input, output, session) {
   # Applied AFTER load_user_data() so we route to the user's prior view.
   pending_last_view <- reactiveVal(NULL)
 
+  # Route the user back to their last-active view. Workouts take precedence:
+  # if mid-session, deep-link back into it via the start_from_preview observer
+  # (which reloads already-logged sets from the DB).
+  route_to_last_view <- function(view) {
+    if (is.null(view)) return()
+    if (nchar(view$workout_id %||% "") > 0) {
+      session$sendCustomMessage("trigger_input",
+        list(name = "start_from_preview", value = view$workout_id))
+    } else if (nchar(view$page %||% "") > 0 &&
+               view$page %in% c("dashboard","progress","friends","profile",
+                                "programs","preview","summary")) {
+      rv$page    <- view$page
+      rv$nav_tab <- if (view$page %in% c("dashboard","progress","friends","profile"))
+                      view$page else "dashboard"
+    }
+  }
+
   observeEvent(input$restore_last_view, {
     parsed <- tryCatch(jsonlite::fromJSON(input$restore_last_view),
                        error = \(e) NULL)
     if (is.null(parsed)) return()
-    pending_last_view(list(
+    view <- list(
       page       = as.character(parsed$page       %||% ""),
       workout_id = as.character(parsed$workout_id %||% "")
-    ))
+    )
+    # restore_last_view and restore_session_refresh fire in the same tick on
+    # reload, in no guaranteed order. If login already completed, route now;
+    # otherwise stash for the refresh observer to consume post-auth. This
+    # avoids the race that dropped the user on the dashboard mid-workout.
+    if (!is.null(rv$token)) route_to_last_view(view) else pending_last_view(view)
   })
 
   # ── Session restore from localStorage refresh token ────────
@@ -689,21 +722,12 @@ server <- function(input, output, session) {
         ))
         load_user_data()
 
-        # Route back to the last-active view if we have one. Workouts
-        # take precedence — if the user was mid-session, drop them back
-        # into it via the existing start_from_preview observer.
+        # Route back to the last-active view if it arrived before we
+        # finished authenticating (otherwise the restore_last_view observer
+        # above already routed, since rv$token is now set).
         view <- pending_last_view()
         if (!is.null(view)) {
-          if (nchar(view$workout_id) > 0) {
-            session$sendCustomMessage("trigger_input",
-              list(name = "start_from_preview", value = view$workout_id))
-          } else if (nchar(view$page) > 0 &&
-                     view$page %in% c("dashboard","progress","friends","profile",
-                                      "programs","preview","summary")) {
-            rv$page    <- view$page
-            rv$nav_tab <- if (view$page %in% c("dashboard","progress","friends","profile"))
-                            view$page else "dashboard"
-          }
+          route_to_last_view(view)
           pending_last_view(NULL)
         }
       }
@@ -775,15 +799,8 @@ server <- function(input, output, session) {
   })
   
   # ── Auto-refresh workouts every 2 min when on dashboard ─────
-  # Was 30s — refetched the whole workouts table 120 times per
-  # browser-hour for a list that rarely changes. 2 min keeps
-  # cross-device sync (finish a session on your phone, see it on
-  # your laptop) without hammering Supabase.
-  autoInvalidate <- reactiveTimer(120000)
-  observe({
-    autoInvalidate()
-    if (!is.null(rv$token) && rv$page == "dashboard" && !is.null(rv$program)) {
-      refresh_workouts()
-    }
-  })
+  # No periodic dashboard poll: the workouts list is refreshed on every
+  # event that can change it (finish session, skip/unskip, regenerate),
+  # and this is a single-device app — so a background timer only added
+  # load without a purpose.
 }

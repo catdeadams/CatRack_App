@@ -9,21 +9,16 @@
 // offline mid-session still degrades — but the SHELL won't blank out
 // and the user sees a clear banner.
 
-const CACHE = 'catrack-v3';
+const CACHE = 'catrack-v4';
 
-const PRECACHE = [
-  '/',
-  '/www/manifest.json',
-  '/www/icons/icon.svg',
-  '/www/icons/icon-192.png',
-  '/www/icons/icon-512.png'
-];
-
+// No static PRECACHE list: under Posit Connect the app is served from a
+// content-scoped path (not '/'), so absolute paths like '/www/...' 404 and
+// addAll() rejects atomically — precaching nothing anyway, while risking a
+// wrong-shell cache on a root deploy. The runtime fetch handler below already
+// mirrors successful /www, /static and /shared responses into the cache, which
+// is scope-correct. So install just activates immediately.
 self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(PRECACHE).catch(() => null))
-      .then(() => self.skipWaiting())
-  );
+  e.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', e => {

@@ -560,35 +560,43 @@ setup_program_server <- function(input, output, session, rv) {
         return()
       }
 
-      all_rows <- do.call(rbind, lapply(seq_len(nrow(wkts)), function(i) {
-        wo  <- wkts[i, ]
-        exs <- tryCatch(
-          sb_select("workout_exercises",
-            sprintf("?workout_id=eq.%s&select=*,exercises(*)&order=exercise_order", wo$id),
-            token = rv$token),
-          error = \(e) NULL)
+      # One batched query for every session's exercises instead of an
+      # N+1 loop (was up to 36+ round-trips for a 12-week program).
+      wkt_ids <- paste(wkts$id, collapse = ",")
+      exs <- tryCatch(
+        sb_select("workout_exercises",
+          sprintf(paste0("?workout_id=in.(%s)&select=*,exercises(name)",
+                         "&order=workout_id,exercise_order"), wkt_ids),
+          token = rv$token),
+        error = \(e) NULL)
 
-        if (!is.null(exs) && nrow(exs) > 0) {
-          do.call(rbind, lapply(seq_len(nrow(exs)), function(j) {
-            ex <- exs[j, ]
-            data.frame(
-              Week          = as.integer(wo$week_number),
-              Day           = as.integer(wo$session_number),
-              Session       = as.character(wo$session_label %||% ""),
-              Exercise      = tryCatch(ex$exercises$name, error = \(e) paste("Exercise", j)),
-              Sets          = as.integer(ex$prescribed_sets %||% NA),
-              Rep_Low       = as.integer(ex$rep_low  %||% NA),
-              Rep_High      = as.integer(ex$rep_high %||% NA),
-              RPE           = ex$rpe_target   %||% "",
-              Set_Type      = ex$set_type     %||% "normal",
-              Superset      = ex$superset_group %||% "",
-              stringsAsFactors = FALSE
-            )
-          }))
-        } else NULL
-      }))
+      if (is.null(exs) || nrow(exs) == 0) {
+        write.csv(data.frame(Note = "No exercise data found."), file, row.names = FALSE)
+        return()
+      }
 
-      if (is.null(all_rows)) all_rows <- data.frame(Note = "No exercise data found.")
+      # Join each exercise row back to its workout's week/day/label.
+      wo_idx <- match(exs$workout_id, wkts$id)
+      ex_names <- vapply(seq_len(nrow(exs)), function(j)
+        tryCatch(as.character(exs$exercises$name[j]) %||% paste("Exercise", j),
+                 error = \(e) paste("Exercise", j)),
+        character(1))
+
+      all_rows <- data.frame(
+        Week     = as.integer(wkts$week_number[wo_idx]),
+        Day      = as.integer(wkts$session_number[wo_idx]),
+        Session  = as.character(wkts$session_label[wo_idx] %||% ""),
+        Exercise = ex_names,
+        Sets     = as.integer(exs$prescribed_sets %||% NA),
+        Rep_Low  = as.integer(exs$rep_low  %||% NA),
+        Rep_High = as.integer(exs$rep_high %||% NA),
+        RPE      = exs$rpe_target     %||% "",
+        Set_Type = exs$set_type       %||% "normal",
+        Superset = exs$superset_group %||% "",
+        stringsAsFactors = FALSE
+      )
+      # Preserve program order: week, then day, then exercise slot.
+      all_rows <- all_rows[order(all_rows$Week, all_rows$Day), , drop = FALSE]
       write.csv(all_rows, file, row.names = FALSE)
     }
   )

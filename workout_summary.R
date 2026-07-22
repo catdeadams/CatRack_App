@@ -28,7 +28,9 @@ workout_summary_ui <- function(summary_data, program = NULL) {
   total_prescribed <- if (!is.null(exercises) && nrow(exercises) > 0)
     sum(exercises$prescribed_sets, na.rm = TRUE) else 0L
 
-  total_logged <- sum(sapply(set_logs, length))
+  # set_logs is a sparse list keyed by set_number — a logged set 3 with
+  # sets 1-2 skipped leaves NULL holes that length() would miscount.
+  total_logged <- sum(sapply(set_logs, function(s) sum(!vapply(s, is.null, logical(1)))))
 
   pct_complete <- if (total_prescribed > 0)
     round(100 * total_logged / total_prescribed) else 0L
@@ -60,6 +62,8 @@ workout_summary_ui <- function(summary_data, program = NULL) {
     lapply(seq_len(nrow(exercises)), function(i) {
       we       <- exercises[i, ]
       we_logs  <- set_logs[[we$id]] %||% list()
+      # Drop sparse NULL holes so counts/notes reflect only real sets.
+      we_logs  <- Filter(Negate(is.null), we_logs)
       n_done   <- length(we_logs)
       ex_name  <- tryCatch(we$exercises$name, error = \(e) paste("Exercise", i))
 
@@ -88,7 +92,7 @@ workout_summary_ui <- function(summary_data, program = NULL) {
           Filter(function(n) nchar(trimws(n)) > 0,
                  sapply(we_logs, function(l) {
                    n <- as.character(l$notes %||% "")
-                   if (n %in% c("", "NA", "{}", "[]", "null")) "" else n
+                   if (trimws(n) %in% c("", "NA", "NULL", "{}", "[]", "null")) "" else n
                  }, USE.NAMES = FALSE)),
           error = \(e) character(0))
 
