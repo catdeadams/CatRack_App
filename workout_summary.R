@@ -87,15 +87,6 @@ workout_summary_ui <- function(summary_data, program = NULL) {
       }, error = \(e) "—")
 
       {
-        # Collect non-empty notes from all logged sets for this exercise
-        notes_list <- tryCatch(
-          Filter(function(n) nchar(trimws(n)) > 0,
-                 sapply(we_logs, function(l) {
-                   n <- as.character(l$notes %||% "")
-                   if (trimws(n) %in% c("", "NA", "NULL", "{}", "[]", "null")) "" else n
-                 }, USE.NAMES = FALSE)),
-          error = \(e) character(0))
-
         div(style = paste0(
               "padding:10px 0; border-bottom:1px solid #1a1a1a;"),
             div(style = "display:flex; justify-content:space-between; align-items:center;",
@@ -116,16 +107,34 @@ workout_summary_ui <- function(summary_data, program = NULL) {
                     }
                 )
             ),
-            # Show any set notes beneath the exercise row
-            if (length(notes_list) > 0)
-              div(style = "margin-top:5px;",
-                  lapply(seq_along(notes_list), function(ni)
-                    div(style = paste0(
-                          "font-size:11px; color:#777; font-style:italic;",
-                          "padding:2px 0 2px 6px; border-left:2px solid #1D9E7540;"),
-                        if (length(notes_list) > 1) paste0("Set ", ni, ": ", notes_list[[ni]])
-                        else notes_list[[ni]])
-                  ))
+            # Per-set breakdown — each set's weight × reps × RPE next to its note
+            if (length(we_logs) > 0)
+              div(style = "margin-top:6px; display:flex; flex-direction:column; gap:2px;",
+                  lapply(seq_along(we_logs), function(si) {
+                    l   <- we_logs[[si]]
+                    w   <- suppressWarnings(as.numeric(l$weight_lbs %||% NA))
+                    rp  <- suppressWarnings(as.integer(l$reps_completed %||% NA))
+                    rpe <- suppressWarnings(as.numeric(l$rpe_actual %||% NA))
+                    sn  <- suppressWarnings(as.integer(l$set_number %||% si))
+                    note <- {
+                      n <- as.character(l$notes %||% "")
+                      if (trimws(n) %in% c("", "NA", "NULL", "{}", "[]", "null")) "" else trimws(n)
+                    }
+                    div(
+                      div(style = "display:flex; justify-content:space-between; gap:8px; font-size:11px;",
+                          span(style = "color:#666;",
+                               paste0("Set ", if (!is.na(sn)) sn else si)),
+                          span(style = "color:#aaa;",
+                               paste0(if (!is.na(w) && w > 0) paste0(w, " lbs") else "BW",
+                                      " × ", if (!is.na(rp)) rp else "—", " reps",
+                                      if (!is.na(rpe)) paste0("  ·  RPE ", rpe) else ""))),
+                      if (nchar(note) > 0)
+                        div(style = paste0(
+                              "font-size:10px; color:#5DCAA5; font-style:italic;",
+                              "padding:1px 0 2px 6px; border-left:2px solid #1D9E7540;"),
+                            paste0("\U0001F4DD ", note))
+                    )
+                  }))
         )
       }
     })

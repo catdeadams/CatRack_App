@@ -119,30 +119,20 @@ fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) 
   logs$wt    <- as.numeric(logs$weight_lbs)
   logs$reps  <- as.integer(logs$reps_completed)
   logs$rpe   <- as.numeric(logs$rpe_actual)
-  # head() rather than [seq_len()] so a user with < n_sessions of history
-  # doesn't get NA-padded rows.
+  logs$sn    <- suppressWarnings(as.integer(logs$set_number))
+  logs$note  <- vapply(seq_len(nrow(logs)), function(k) {
+    n <- trimws(as.character(logs$notes[k] %||% ""))
+    if (n %in% c("", "NA", "NULL", "{}", "[]", "null")) "" else n
+  }, character(1))
+  # Return ONE ROW PER SET (not just the best set) for the last n_sessions,
+  # so the history panel can show each set's weight × reps × RPE next to that
+  # set's note. head() over unique dates avoids NA-padding sparse history.
   dates <- head(unique(logs$date[order(logs$date, decreasing = TRUE)]), n_sessions)
   do.call(rbind, lapply(dates, function(d) {
-    day  <- logs[logs$date == d, ]
-    best <- day[which.max(replace(day$wt, is.na(day$wt), -Inf)), ]
-    # Collect EVERY set's note for the day (not just the best set's), in
-    # set order, labelling by set number when there's more than one.
-    note_val <- tryCatch({
-      sn  <- suppressWarnings(as.integer(day$set_number))
-      ord <- order(replace(sn, is.na(sn), .Machine$integer.max))
-      picks <- character(0)
-      for (k in ord) {
-        n <- trimws(as.character(day$notes[k] %||% ""))
-        if (n %in% c("", "NA", "NULL", "{}", "[]", "null")) next
-        picks <- c(picks, if (!is.na(sn[k])) paste0("Set ", sn[k], ": ", n) else n)
-      }
-      if (length(picks) == 0) NA_character_
-      else if (length(picks) == 1) sub("^Set [0-9]+: ", "", picks[1])
-      else paste(picks, collapse = "\n")
-    }, error = \(e) NA_character_)
-    data.frame(date   = d, wt = best$wt, reps = best$reps,
-               rpe    = best$rpe, n_sets = nrow(day),
-               note   = note_val, stringsAsFactors = FALSE)
+    day <- logs[logs$date == d, ]
+    day <- day[order(replace(day$sn, is.na(day$sn), .Machine$integer.max)), ]
+    data.frame(date = d, set_number = day$sn, wt = day$wt, reps = day$reps,
+               rpe = day$rpe, note = day$note, stringsAsFactors = FALSE)
   }))
 }
 
@@ -888,27 +878,38 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           ),
                           tags$script(HTML(sprintf("
 (function() {
-  var key   = 'catrack_note_%s_s%d';
-  var inpId = '%s';
-  var inp   = document.getElementById(inpId);
-  if (!inp) return;
-  if (inp.value === '') {
-    var saved = localStorage.getItem(key);
-    if (saved) inp.value = saved;
-  }
-  // Push current value to Shiny on init — the default text-input
-  // binding only flushes on blur, so without this, tapping the ✓
-  // button before the input loses focus (very common on mobile)
-  // would log the set with an empty note.
-  if (window.Shiny && Shiny.setInputValue)
-    Shiny.setInputValue(inpId, inp.value);
-  inp.addEventListener('input', function() {
-    localStorage.setItem(key, inp.value);
-    if (window.Shiny && Shiny.setInputValue)
-      Shiny.setInputValue(inpId, inp.value);
+  // Crash-safe set inputs: mirror weight/reps/RPE/note to localStorage so a
+  // disconnect + reload never loses what you typed. On reload the draft is
+  // restored (it only exists if you actually edited the field, so it beats
+  // the pre-filled suggestion); once the set is saved to the server the draft
+  // is cleared. Also flushes the value to Shiny immediately — the default
+  // input binding only fires on blur, and mobile taps the log button first.
+  var wid = '%s', sn = %d, logged = %s;
+  var base = wid + '_s' + sn;
+  var pairs = [
+    ['w_'   + base, 'catrack_draft_w_'    + base],
+    ['r_'   + base, 'catrack_draft_r_'    + base],
+    ['rpe_' + base, 'catrack_draft_rpe_'  + base],
+    ['note_'+ base, 'catrack_draft_note_' + base]
+  ];
+  pairs.forEach(function(p) {
+    var id = p[0], key = p[1];
+    var inp = document.getElementById(id);
+    if (!inp) return;
+    if (logged) {
+      localStorage.removeItem(key);
+    } else {
+      var saved = localStorage.getItem(key);
+      if (saved !== null && saved !== '') inp.value = saved;
+    }
+    if (window.Shiny && Shiny.setInputValue) Shiny.setInputValue(id, inp.value);
+    inp.addEventListener('input', function() {
+      localStorage.setItem(key, inp.value);
+      if (window.Shiny && Shiny.setInputValue) Shiny.setInputValue(id, inp.value);
+    });
   });
 })();
-", we$id, s, note_key)))
+", we$id, s, tolower(as.character(is_logged)))))
                       )
                       )  # end tagList wrapping set row + note
                     })
@@ -926,24 +927,34 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                                 "font-size:11px; color:#888; cursor:pointer; padding:3px 0;",
                                 "list-style:none; -webkit-user-select:none; user-select:none;"),
                               "History"),
-                            div(style = "margin-top:6px; display:flex; flex-direction:column; gap:4px;",
-                                lapply(seq_len(nrow(hist)), function(h) {
-                                  r <- hist[h, ]
-                                  has_note <- !is.na(r$note) && nchar(r$note) > 0
+                            # hist is one row PER SET; group by session (date)
+                            # and show every set's weight × reps × RPE with its
+                            # own note beside it.
+                            div(style = "margin-top:6px; display:flex; flex-direction:column; gap:6px;",
+                                lapply(unique(hist$date), function(dt) {
+                                  sets <- hist[hist$date == dt, ]
                                   div(style = paste0(
-                                        "padding:5px 7px; background:#0d0d0d; border-radius:5px;",
+                                        "padding:6px 8px; background:#0d0d0d; border-radius:6px;",
                                         "font-size:11px;"),
-                                      div(style = "display:flex; justify-content:space-between;",
-                                          span(style = "color:#777;", format(r$date, "%b %d")),
-                                          span(style = "color:#aaa;",
-                                               paste0(if (!is.na(r$wt)) paste0(r$wt, " lbs") else "BW",
-                                                      " × ", r$reps, " reps",
-                                                      if (!is.na(r$rpe)) paste0("  RPE ", r$rpe) else "",
-                                                      if (r$n_sets > 1) paste0("  (", r$n_sets, " sets)") else ""))),
-                                      if (has_note)
-                                        div(style = "font-size:10px; color:#666; font-style:italic; margin-top:2px;",
-                                            lapply(strsplit(r$note, "\n", fixed = TRUE)[[1]],
-                                                   function(ln) div(style = "margin-top:1px;", ln)))
+                                      div(style = "color:#888; font-weight:600; margin-bottom:3px;",
+                                          format(dt, "%b %d")),
+                                      div(style = "display:flex; flex-direction:column; gap:2px;",
+                                          lapply(seq_len(nrow(sets)), function(k) {
+                                            r <- sets[k, ]
+                                            has_note <- !is.na(r$note) && nchar(r$note) > 0
+                                            div(
+                                              div(style = "display:flex; justify-content:space-between; gap:8px;",
+                                                  span(style = "color:#777;",
+                                                       if (!is.na(r$set_number)) paste0("Set ", r$set_number) else "Set"),
+                                                  span(style = "color:#cfcfcf;",
+                                                       paste0(if (!is.na(r$wt)) paste0(r$wt, " lbs") else "BW",
+                                                              " × ", if (!is.na(r$reps)) r$reps else "—", " reps",
+                                                              if (!is.na(r$rpe)) paste0("  ·  RPE ", r$rpe) else ""))),
+                                              if (has_note)
+                                                div(style = "color:#5DCAA5; font-style:italic; font-size:10px; margin-top:1px;",
+                                                    paste0("\U0001F4DD ", r$note))
+                                            )
+                                          }))
                                   )
                                 })
                             )
@@ -1551,7 +1562,12 @@ setup_workout_server <- function(input, output, session, rv) {
                if (is_edit) " updated ✓" else " logged ✓"),
         type = "message", duration = 2)
     } else {
-      showNotification("Error saving set. Try again.", type = "error")
+      # The set's values are mirrored to localStorage on the client, so a
+      # failure here (usually a dropped connection) doesn't lose data — the
+      # numbers stay in the boxes and the app reconnects/restores itself.
+      showNotification(
+        "Couldn't reach the server — your entry is saved on this device. Tap log again in a moment.",
+        type = "warning", duration = 5)
     }
   })
 

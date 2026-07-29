@@ -435,18 +435,91 @@ login_page_ui <- function(mode = "login") {
           window.addEventListener("offline", function() {
             showBanner("⚠  You are offline — changes will sync when reconnected.");
           });
-          // Shiny dispatches `shiny:disconnected` when the websocket
-          // drops (server restart, idle timeout, etc). With
-          // session$allowReconnect(TRUE) on the server, Shiny will
-          // auto-reconnect — we just show progress and hide the
-          // default modal that would otherwise block the screen.
+          // Disconnect self-heal: reconnect briefly, then reload + restore.
+          // The default Shiny disconnect overlay dims and freezes the screen
+          // with no way back once Posit has dropped the session (the top
+          // usability complaint). We suppress it and drive our own recovery:
+          // show a clear Reconnecting screen, give Shiny auto-reconnect a
+          // short grace period, then reload — which restores the session AND
+          // the open workout from localStorage, so no manual re-login.
+          if (!document.getElementById("catrack-hide-shiny-overlay")) {
+            var _st = document.createElement("style");
+            _st.id = "catrack-hide-shiny-overlay";
+            _st.textContent = "#shiny-disconnected-overlay{display:none !important;}" +
+              "@keyframes ctspin{to{transform:rotate(360deg)}}";
+            document.head.appendChild(_st);
+          }
+          var _catrackReconnectTimer = null;
+          function catrackShowReconnect() {
+            var ov = document.getElementById("catrack-reconnect-overlay");
+            if (!ov) {
+              ov = document.createElement("div");
+              ov.id = "catrack-reconnect-overlay";
+              ov.style.cssText = "position:fixed;inset:0;z-index:10000;" +
+                "background:rgba(12,12,12,0.94);display:flex;flex-direction:column;" +
+                "align-items:center;justify-content:center;gap:14px;color:#f0f0f0;" +
+                "font-family:system-ui,sans-serif;text-align:center;padding:24px;";
+              var sp = document.createElement("div");
+              sp.style.cssText = "width:34px;height:34px;border:3px solid #333;" +
+                "border-top-color:#1D9E75;border-radius:50%;" +
+                "animation:ctspin 0.9s linear infinite;";
+              var t1 = document.createElement("div");
+              t1.style.cssText = "font-size:15px;font-weight:700;";
+              t1.textContent = "Reconnecting…";
+              var t2 = document.createElement("div");
+              t2.style.cssText = "font-size:12px;color:#aaa;max-width:270px;line-height:1.4;";
+              t2.textContent = "Your session and workout are saved — this restores automatically.";
+              var btn = document.createElement("button");
+              btn.textContent = "Resume now";
+              btn.style.cssText = "margin-top:6px;background:#1D9E75;color:#fff;border:none;" +
+                "border-radius:10px;padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;";
+              btn.addEventListener("click", function(){ location.reload(); });
+              ov.appendChild(sp); ov.appendChild(t1); ov.appendChild(t2); ov.appendChild(btn);
+              document.body.appendChild(ov);
+            }
+            ov.style.display = "flex";
+          }
+          function catrackHideReconnect() {
+            var ov = document.getElementById("catrack-reconnect-overlay");
+            if (ov) ov.style.display = "none";
+          }
           document.addEventListener("shiny:disconnected", function() {
-            showBanner("⟳  Reconnecting...");
-            var dlg = document.getElementById("ss-reconnecting-link");
-            if (dlg && dlg.style) dlg.style.display = "none";
+            showBanner("⟳  Reconnecting…");
+            catrackShowReconnect();
+            if (_catrackReconnectTimer) clearTimeout(_catrackReconnectTimer);
+            _catrackReconnectTimer = setTimeout(function(){ location.reload(); }, 6000);
           });
-          document.addEventListener("shiny:connected", hideBanner);
+          document.addEventListener("shiny:connected", function() {
+            if (_catrackReconnectTimer) {
+              clearTimeout(_catrackReconnectTimer); _catrackReconnectTimer = null;
+            }
+            catrackHideReconnect();
+            hideBanner();
+          });
           if (!navigator.onLine) showBanner();
+        }
+
+        // ── Back-button / swipe-back guard ────────────────────────
+        // Without this the OS back gesture navigates the browser away and
+        // closes the PWA (very easy to trigger by accident, especially on
+        // the dim reconnect screen). We trap back navigation and route it
+        // INSIDE the app instead: a sub-page (workout, progress, profile,
+        // etc.) goes back to the dashboard; the dashboard stays put so the
+        // app never closes from an accidental swipe.
+        if (!window._catrackBackGuard) {
+          window._catrackBackGuard = true;
+          try { history.pushState({catrack: true}, ""); } catch (e) {}
+          window.addEventListener("popstate", function() {
+            // Re-arm immediately so there is always a state to pop.
+            try { history.pushState({catrack: true}, ""); } catch (e) {}
+            var page = localStorage.getItem("catrack_last_page") || "";
+            var sub = ["workout","preview","summary","progress",
+                       "friends","profile","programs"];
+            if (sub.indexOf(page) !== -1 && window.Shiny && Shiny.setInputValue) {
+              Shiny.setInputValue("nav_tab", "dashboard", {priority: "event"});
+            }
+            // On dashboard / login / onboarding: do nothing — stay in app.
+          });
         }
 
         // ── Supabase password recovery from URL hash ──────────────
@@ -775,9 +848,10 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
               if (!is.null(week_workouts) && nrow(week_workouts) > 0) {
                 lapply(seq_len(nrow(week_workouts)), function(s) {
                   wo      <- week_workouts[s, ]
-                  wo_date <- tryCatch(as.Date(wo$scheduled_date), error = \(e) NA)
-                  # completed_at from Supabase is a string or NA
-                  # Must handle: NA, "NA", NULL, "", and real timestamps
+                  # Week-based (not day-based): sessions stay fully
+                  # actionable — do or skip — any time, even if they bleed
+                  # into a later week. No per-day date labels or "missed"
+                  # gating that used to block skipping a late session.
                   completed_val <- tryCatch(wo$completed_at, error = \(e) NA)
                   is_done <- isTRUE(
                     !is.null(completed_val) &&
@@ -785,26 +859,26 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
                       !is.na(completed_val) &&
                       nchar(as.character(completed_val)) > 5
                   )
-                  is_today <- isTRUE(!is.na(wo_date) && wo_date == current_date)
-                  
+                  is_skipped <- isTRUE(tryCatch(
+                    as.logical(wo$is_skipped), error = \(e) FALSE))
+
                   card_class <- paste("ct-session-card",
-                                      if (is_done) "completed" else if (is_today) "today" else "future")
-                  
+                                      if (is_done) "completed"
+                                      else if (!is_skipped && is_current) "today"
+                                      else "future")
+
                   div(class = card_class,
                       onclick = if (!is_done) sprintf(
                         "Shiny.setInputValue('open_preview','%s',{priority:'event'})",
                         wo$id) else NULL,
                       div(style="display:flex;justify-content:space-between;align-items:flex-start;",
-                          div(div(class="ct-sess-label", paste0("DAY ", wo$session_number)),
+                          div(div(class="ct-sess-label", paste0("SESSION ", wo$session_number)),
                               div(class="ct-sess-type",  wo$session_label)),
-                          if (is_done)  div(class="ct-sess-check", "✓")
-                          else if (is_today) div(style="color:#1D9E75;font-size:12px;font-weight:700;", "TODAY")
-                          else if (!is_done && !is.na(wo_date) && wo_date < Sys.Date())
-                            div(style="color:#555;font-size:10px;", "MISSED")
+                          if (is_done) div(class="ct-sess-check", "✓")
+                          else if (is_skipped)
+                            div(style="color:#777;font-size:10px;font-weight:700;", "SKIPPED")
                           else NULL
                       ),
-                      div(class="ct-sess-date",
-                          if (!is.na(wo_date)) format(wo_date, "%b %d") else ""),
                       if (is_done)
                         tags$button("View Summary",
                           style=paste0("margin-top:6px;font-size:11px;color:#1D9E75;",
@@ -813,7 +887,9 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
                           onclick=sprintf(
                             "Shiny.setInputValue('view_summary','%s',{priority:'event'});event.stopPropagation();",
                             wo$id))
-                      else if (!is_done && !is.na(wo_date) && wo_date >= Sys.Date())
+                      else if (!is_skipped)
+                        # Skip is available for ANY incomplete session now,
+                        # regardless of how many days have passed.
                         div(style="margin-top:5px;",
                             tags$button("Skip",
                                         style="font-size:10px;color:#555;background:none;border:none;
@@ -821,6 +897,7 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
                                         onclick=sprintf(
                                           "Shiny.setInputValue('skip_workout_prompt','%s|%s',{priority:'event'});event.stopPropagation();",
                                           wo$id, wo$session_label)))
+                      else NULL
                   )
                 })
               } else {

@@ -339,12 +339,33 @@ exercise_summary_ui <- function(sessions, metric = "e1rm") {
   )
 }
 
-# Scrollable session-by-session breakdown: top set, 1RM delta, and notes.
-exercise_detail_list_ui <- function(sessions) {
+# Flatten a single exercise's logs to one row per set (date, set#, wt, reps,
+# rpe, note) so the detail list can show every set, not just the top one.
+build_exercise_set_rows <- function(logs_df) {
+  if (is.null(logs_df) || nrow(logs_df) == 0) return(NULL)
+  d <- logs_df
+  d$date <- as.Date(as.POSIXct(d$logged_at))
+  d$wt   <- suppressWarnings(as.numeric(d$weight_lbs))
+  d$reps <- suppressWarnings(as.integer(d$reps_completed))
+  d$rpe  <- suppressWarnings(as.numeric(d$rpe_actual))
+  d$sn   <- suppressWarnings(as.integer(d$set_number))
+  raw_notes <- if ("notes" %in% names(d)) d$notes else rep(NA, nrow(d))
+  d$note <- vapply(seq_len(nrow(d)), function(k) {
+    n <- trimws(as.character(raw_notes[k] %||% ""))
+    if (n %in% c("", "NA", "NULL", "{}", "[]", "null")) "" else n
+  }, character(1))
+  d <- d[!is.na(d$date), c("date", "sn", "wt", "reps", "rpe", "note")]
+  if (nrow(d) == 0) return(NULL)
+  d[order(d$date, replace(d$sn, is.na(d$sn), .Machine$integer.max)), ]
+}
+
+# Scrollable session-by-session breakdown. When set_rows is supplied, each
+# session expands to show every set's weight × reps × RPE next to its note.
+exercise_detail_list_ui <- function(sessions, set_rows = NULL) {
   if (is.null(sessions) || nrow(sessions) == 0) return(NULL)
   s <- sessions[order(sessions$date, decreasing = TRUE), ]
   div(style = "margin-top:12px;border-top:1px solid #222;padding-top:10px;
-               max-height:280px;overflow-y:auto;",
+               max-height:340px;overflow-y:auto;",
     lapply(seq_len(nrow(s)), function(i) {
       r    <- s[i, ]
       d_e1 <- r$e1rm_delta
@@ -358,6 +379,7 @@ exercise_detail_list_ui <- function(sessions) {
         paste0(r$best_weight, " lbs × ", r$best_reps,
                if (!is.na(r$best_rpe)) paste0(" @ RPE ", r$best_rpe) else "")
       else paste0(r$max_reps, " reps (BW)")
+      day_sets <- if (!is.null(set_rows)) set_rows[set_rows$date == r$date, ] else NULL
       div(style = "padding:8px 0;border-bottom:1px solid #1a1a1a;",
           div(style = "display:flex;justify-content:space-between;align-items:baseline;gap:8px;",
               div(style = "font-size:12px;color:#ddd;font-weight:600;white-space:nowrap;",
@@ -368,9 +390,27 @@ exercise_detail_list_ui <- function(sessions) {
                 paste0("Est. 1RM ", round(r$best_e1rm), " lbs · ", r$n_sets,
                        " set", ifelse(r$n_sets == 1, "", "s"),
                        " · vol ", format(round(r$volume), big.mark = ","), " lbs")),
-          if (nchar(r$notes) > 0)
+          # Per-set breakdown — each set's numbers next to its own note
+          if (!is.null(day_sets) && nrow(day_sets) > 0)
+            div(style = "margin-top:4px;display:flex;flex-direction:column;gap:1px;",
+                lapply(seq_len(nrow(day_sets)), function(k) {
+                  st <- day_sets[k, ]
+                  div(
+                    div(style = "display:flex;justify-content:space-between;gap:8px;font-size:11px;",
+                        span(style = "color:#666;",
+                             if (!is.na(st$sn)) paste0("Set ", st$sn) else "Set"),
+                        span(style = "color:#aaa;",
+                             paste0(if (!is.na(st$wt)) paste0(st$wt, " lbs") else "BW",
+                                    " × ", if (!is.na(st$reps)) st$reps else "—", " reps",
+                                    if (!is.na(st$rpe)) paste0("  ·  RPE ", st$rpe) else ""))),
+                    if (nchar(st$note) > 0)
+                      div(style = "font-size:10px;color:#5DCAA5;font-style:italic;margin:0 0 2px 0;",
+                          paste0("\U0001F4DD ", st$note))
+                  )
+                }))
+          else if (nchar(r$notes) > 0)
             div(style = "font-size:11px;color:#5DCAA5;margin-top:3px;font-style:italic;",
-                paste0("📝 ", r$notes))
+                paste0("\U0001F4DD ", r$notes))
       )
     })
   )
@@ -773,6 +813,8 @@ setup_progress_server <- function(input, output, session, rv) {
 
   # Cached per-session summary for the selected exercise. Recomputes only
   # when the logs or the selected exercise change — not on every reactive tick.
+  # Returns both the per-session summary (for the chart/summary) and the raw
+  # per-set logs (for the per-set detail list), from a single filter pass.
   exercise_sessions <- reactive({
     req(rv$all_logs)
     ex_name <- rv$selected_exercise %||%
@@ -783,20 +825,21 @@ setup_progress_server <- function(input, output, session, rv) {
                    logical(1))
     ex_logs <- rv$all_logs[keep, ]
     if (nrow(ex_logs) == 0) return(NULL)
-    compute_exercise_sessions(ex_logs, rv$program)
+    list(summary = compute_exercise_sessions(ex_logs, rv$program),
+         raw     = ex_logs)
   })
 
   output$plot_exercise_progress <- plotly::renderPlotly({
-    s <- exercise_sessions(); req(!is.null(s))
-    plot_exercise_progress(s, rv$selected_exercise, rv$progress_metric %||% "e1rm")
+    s <- exercise_sessions(); req(!is.null(s), !is.null(s$summary))
+    plot_exercise_progress(s$summary, rv$selected_exercise, rv$progress_metric %||% "e1rm")
   })
   output$exercise_progress_summary <- renderUI({
-    s <- exercise_sessions(); if (is.null(s)) return(NULL)
-    exercise_summary_ui(s, rv$progress_metric %||% "e1rm")
+    s <- exercise_sessions(); if (is.null(s) || is.null(s$summary)) return(NULL)
+    exercise_summary_ui(s$summary, rv$progress_metric %||% "e1rm")
   })
   output$exercise_detail_list <- renderUI({
-    s <- exercise_sessions(); if (is.null(s)) return(NULL)
-    exercise_detail_list_ui(s)
+    s <- exercise_sessions(); if (is.null(s) || is.null(s$summary)) return(NULL)
+    exercise_detail_list_ui(s$summary, build_exercise_set_rows(s$raw))
   })
   
   observeEvent(input$create_group, {

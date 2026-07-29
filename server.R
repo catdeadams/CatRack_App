@@ -15,6 +15,7 @@ server <- function(input, output, session) {
     # Auth
     token        = NULL,
     refresh_token = NULL,
+    token_acquired = NULL,    # Sys.time() the access token was issued (for proactive refresh)
     user_id      = NULL,
     user_email   = NULL,
     auth_mode    = "login",   # "login" | "signup"
@@ -228,8 +229,9 @@ server <- function(input, output, session) {
     token_val <- tryCatch(result$body$access_token, error = \(e) NULL)
     
     if (result$status %in% c(200, 201) && !is.null(token_val) && nchar(token_val) > 0) {
-      rv$token         <- token_val
-      rv$refresh_token <- tryCatch(result$body$refresh_token, error = \(e) NULL)
+      rv$token          <- token_val
+      rv$refresh_token  <- tryCatch(result$body$refresh_token, error = \(e) NULL)
+      rv$token_acquired <- Sys.time()
       rv$user_id       <- tryCatch(result$body$user$id,    error = \(e) NULL)
       rv$user_email    <- tryCatch(result$body$user$email, error = \(e) NULL)
 
@@ -711,8 +713,9 @@ server <- function(input, output, session) {
     if (result$status %in% c(200, 201)) {
       new_token <- tryCatch(result$body$access_token, error = \(e) NULL)
       if (!is.null(new_token) && nchar(new_token) > 0) {
-        rv$token         <- new_token
-        rv$refresh_token <- tryCatch(result$body$refresh_token, error = \(e) NULL)
+        rv$token          <- new_token
+        rv$refresh_token  <- tryCatch(result$body$refresh_token, error = \(e) NULL)
+        rv$token_acquired <- Sys.time()
         rv$user_id       <- tryCatch(result$body$user$id,    error = \(e) NULL)
         rv$user_email    <- tryCatch(result$body$user$email, error = \(e) NULL)
         # Save rotated refresh token
@@ -750,11 +753,41 @@ server <- function(input, output, session) {
     }
   })
 
+  # ── Proactive token refresh (piggybacks on the client heartbeat) ──
+  # Supabase access tokens expire ~1h. Without refreshing, a long session
+  # starts failing set saves with 401 ("set not saved"). The heartbeat
+  # fires every 30s; when the current token is older than ~45 min we
+  # silently exchange the refresh token for a fresh one so saves keep
+  # working through long sessions without a re-login.
+  observeEvent(input$client_heartbeat, {
+    if (is.null(rv$token) || is.null(rv$refresh_token) ||
+        is.null(rv$token_acquired)) return()
+    age_min <- tryCatch(
+      as.numeric(difftime(Sys.time(), rv$token_acquired, units = "mins")),
+      error = \(e) 0)
+    if (is.na(age_min) || age_min < 45) return()
+    res <- tryCatch(sb_refresh(rv$refresh_token), error = \(e) NULL)
+    if (!is.null(res) && res$status %in% c(200, 201)) {
+      nt <- tryCatch(res$body$access_token, error = \(e) NULL)
+      if (!is.null(nt) && nchar(nt) > 0) {
+        rv$token          <- nt
+        rv$refresh_token  <- tryCatch(res$body$refresh_token %||% rv$refresh_token,
+                                      error = \(e) rv$refresh_token)
+        rv$token_acquired <- Sys.time()
+        session$sendCustomMessage("save_auth_session", list(
+          refresh_token = rv$refresh_token %||% "",
+          email         = rv$user_email %||% ""))
+        message("Access token proactively refreshed.")
+      }
+    }
+  }, ignoreInit = TRUE)
+
   # ── Logout ─────────────────────────────────────────────────
   observeEvent(input$logout, {
     session$sendCustomMessage("clear_auth_session", list())
-    rv$token        <- NULL
-    rv$refresh_token <- NULL
+    rv$token         <- NULL
+    rv$refresh_token  <- NULL
+    rv$token_acquired <- NULL
     rv$user_id      <- NULL
     rv$user_email   <- NULL
     rv$profile      <- NULL

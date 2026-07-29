@@ -2272,7 +2272,7 @@
       "checksum": "928b51825f7808b72569947687d6e53e"
     },
     "global.R": {
-      "checksum": "075947076d3bb8c519c42f5aa38009a3"
+      "checksum": "4e12144bcf36b87cabe826896714f709"
     },
     "methodology.R": {
       "checksum": "35ce6d271419364dbb5e23b2d5b5c2e2"
@@ -2287,19 +2287,19 @@
       "checksum": "59e7aea145796c86267a928dc115590f"
     },
     "progress_screen.R": {
-      "checksum": "1d2011cca5cdc0b39d2b3851fd8a4c94"
+      "checksum": "1a56ad011b477d7ab96ab57d8c8aa067"
     },
     "server.R": {
-      "checksum": "9c15e15b6a569f4464ad51100d22f038"
+      "checksum": "311612b9bd9ec70d76f0161b404f6936"
     },
     "ui.R": {
       "checksum": "ffcc4f06d3aef1e05e3d74b33448bd05"
     },
     "workout_screen.R": {
-      "checksum": "d04d22ffb93aa17eeeda85a82e8b897b"
+      "checksum": "77e3589b0d42440106fbd87e14aa9ed7"
     },
     "workout_summary.R": {
-      "checksum": "da45b5bd37d60dcda0a830d9384f4063"
+      "checksum": "4917b094ca44983efb7774685c1acc04"
     },
     "www/icons/icon-192.png": {
       "checksum": "a18901e9b07a57867d18877c5b90fc8e"
