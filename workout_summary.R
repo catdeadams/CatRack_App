@@ -30,7 +30,10 @@ workout_summary_ui <- function(summary_data, program = NULL) {
 
   # set_logs is a sparse list keyed by set_number — a logged set 3 with
   # sets 1-2 skipped leaves NULL holes that length() would miscount.
-  total_logged <- sum(sapply(set_logs, function(s) sum(!vapply(s, is.null, logical(1)))))
+  # Guard the empty case: sum(sapply(list(), ...)) is sum(list()) which errors
+  # and blew up the whole summary render for a completed-but-empty workout.
+  total_logged <- if (length(set_logs) == 0) 0L else
+    sum(vapply(set_logs, function(s) sum(!vapply(s, is.null, logical(1))), integer(1)))
 
   pct_complete <- if (total_prescribed > 0)
     round(100 * total_logged / total_prescribed) else 0L

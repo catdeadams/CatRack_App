@@ -162,7 +162,7 @@ password_reset_ui <- function(error_msg = NULL) {
 # ── PROFILE PAGE UI ──────────────────────────────────────────
 # Simplified layout:
 #   1. Header (avatar/name/email)
-#   2. Display name (single source of truth; syncs to friends + programs)
+#   2. Display name (single source of truth; used in program names)
 #   3. Active Program card — collapsed by default. Tap to expand and
 #      see goal/difficulty/split/frequency/equipment. The expanded view
 #      has Edit Gear + Edit Frequency buttons that regenerate only the
@@ -213,7 +213,7 @@ profile_page_ui <- function(profile, user_email, program,
                  padding:16px; margin-bottom:10px;",
       div(class = "ct-section-title", "DISPLAY NAME"),
       div(style = "font-size:11px; color:#555; margin-bottom:8px; line-height:1.4;",
-          "Shown to friends and used in your program names."),
+          "Used in your program names."),
       div(style = "display:flex; gap:8px; align-items:center;",
         tags$input(type="text", id="profile_name", value=disp_name,
           style="flex:1; background:#1e1e1e; border:1.5px solid #262626;

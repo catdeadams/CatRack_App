@@ -27,6 +27,15 @@ SUPABASE_ANON_KEY    <- Sys.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY")
 ANTHROPIC_API_KEY    <- Sys.getenv("ANTHROPIC_API_KEY")
 
+# ── KIOSK AUTO-LOGIN ────────────────────────────────────────
+# This is a single-user app: on startup it signs in automatically as the
+# owner using these env vars, so there is no login screen. The email defaults
+# to the owner's; set CATRACK_PASSWORD (Posit Connect → Environment Variables,
+# and .Renviron locally). RLS still applies — the app holds a real user JWT.
+# If the password is unset or wrong, the app falls back to the login form.
+CATRACK_EMAIL    <- Sys.getenv("CATRACK_EMAIL", "catadamsm@gmail.com")
+CATRACK_PASSWORD <- Sys.getenv("CATRACK_PASSWORD")
+
 # Warn loudly at startup if any required key is missing
 missing_keys <- c("SUPABASE_URL","SUPABASE_ANON_KEY","SUPABASE_SERVICE_KEY")[
   c(SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY) == ""
@@ -338,9 +347,12 @@ catrack_logo_svg <- function(size = "full", color = "#1D9E75") {
 # Defined here in global.R so they are available to both
 # ui.R and server.R (split-file Shiny shares global.R only).
 
-login_page_ui <- function(mode = "login") {
-  div(class = "ct-onboard-step",
-      # Session persistence + password recovery JS
+# Global runtime JS — session restore, keep-alive heartbeat, custom-message
+# handlers, offline/disconnect self-heal, back-button guard, and password-
+# recovery hash detection. Mounted ONCE in ui.R so it loads on every page.
+# (It used to live inside login_page_ui, which no longer renders in normal
+# kiosk operation, so these reliability features would otherwise never load.)
+catrack_runtime_js <- function() {
       tags$script(HTML('
       (function() {
         // ── localStorage session restore ──────────────────────────
@@ -514,7 +526,7 @@ login_page_ui <- function(mode = "login") {
             try { history.pushState({catrack: true}, ""); } catch (e) {}
             var page = localStorage.getItem("catrack_last_page") || "";
             var sub = ["workout","preview","summary","progress",
-                       "friends","profile","programs"];
+                       "profile","programs"];
             if (sub.indexOf(page) !== -1 && window.Shiny && Shiny.setInputValue) {
               Shiny.setInputValue("nav_tab", "dashboard", {priority: "event"});
             }
@@ -530,45 +542,37 @@ login_page_ui <- function(mode = "login") {
           }, 800);
         }
       })();
-    ')),
+    '))
+}
+
+# Brief splash while the kiosk auto-login runs at startup.
+loading_page_ui <- function() {
+  div(class = "ct-onboard-step",
+      style = "min-height:70vh; display:flex; flex-direction:column;
+               align-items:center; justify-content:center; gap:16px;",
+      div(class = "ct-logo-wrap", catrack_logo_svg("full")),
+      tags$div(style = paste0(
+        "width:30px; height:30px; border:3px solid #222; border-top-color:#1D9E75;",
+        "border-radius:50%; animation:ctspin 0.9s linear infinite;")),
+      div(style = "font-size:12px; color:#555;", "Loading your training…"),
+      tags$style(HTML("@keyframes ctspin{to{transform:rotate(360deg)}}"))
+  )
+}
+
+# Fallback login form. In normal kiosk operation the app auto-logs-in from the
+# CATRACK_EMAIL / CATRACK_PASSWORD env vars, so this is never shown; it appears
+# only if those are unset or the auto-login fails, so the app never bricks.
+login_page_ui <- function(mode = "login") {
+  div(class = "ct-onboard-step",
       div(class = "ct-logo-wrap", catrack_logo_svg("full")),
       div(class = "ct-tagline", "Science-based training. Built around you."),
-      
       div(class = "ct-auth-card",
-          h5(if (mode == "login") "Welcome back" else "Create your account",
-             style = "font-weight:700; margin-bottom:20px;"),
-          
-          if (mode == "signup")
-            div(textInput("signup_name", "Display Name",
-                          placeholder = "How you'll appear to friends")),
-          
+          h5("Sign in", style = "font-weight:700; margin-bottom:20px;"),
           textInput("auth_email", "Email", placeholder = "you@example.com"),
           passwordInput("auth_password", "Password", placeholder = "••••••••"),
-          
-          if (mode == "signup")
-            passwordInput("auth_password2", "Confirm Password", placeholder = "••••••••"),
-          
           uiOutput("auth_error"),
-          
-          if (mode == "login")
-            tags$button("Log in", class = "ct-btn-primary",
-                        onclick = "Shiny.setInputValue('auth_action', 'login', {priority:'event'})")
-          else
-            tags$button("Create Account", class = "ct-btn-primary",
-                        onclick = "Shiny.setInputValue('auth_action', 'signup', {priority:'event'})"),
-          
-          hr(class = "ct-divider"),
-          
-          if (mode == "login")
-            div(style = "text-align:center; font-size:13px; color:#666;",
-                "New here? ",
-                tags$a("Create an account", href = "#",
-                       onclick = "Shiny.setInputValue('switch_auth_mode', 'signup', {priority:'event'})"))
-          else
-            div(style = "text-align:center; font-size:13px; color:#666;",
-                "Already have an account? ",
-                tags$a("Log in", href = "#",
-                       onclick = "Shiny.setInputValue('switch_auth_mode', 'login', {priority:'event'})"))
+          tags$button("Log in", class = "ct-btn-primary",
+                      onclick = "Shiny.setInputValue('auth_action', 'login', {priority:'event'})")
       )
   )
 }
@@ -729,7 +733,7 @@ onboarding_page_ui <- function(step, values = list()) {
                          "5" = tagList(
                            div(class = "ct-step-title", "You're all set!"),
                            div(class = "ct-step-sub", "Here's your plan. We'll generate your 12-week program now."),
-                           textInput("display_name", "Your display name (shown to friends)",
+                           textInput("display_name", "Your name (used in your program names)",
                                      value = values$display_name %||% "", placeholder = "e.g. Cat"),
                            div(class = "ct-session-card future", style = "margin:12px 0;",
                                div(style = "display:grid; grid-template-columns:1fr 1fr; gap:12px;",
@@ -912,7 +916,6 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
 # ── Bottom navigation (SVG icons) ────────────────────────────
 nav_icon_program  <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><rect x="7" y="14" width="3" height="3" rx="0.5"/></svg>'
 nav_icon_progress <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>'
-nav_icon_friends  <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/></svg>'
 nav_icon_profile  <- '<svg style="width:22px;height:22px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>'
 
 bottom_nav_ui <- function(active = "dashboard") {
@@ -928,7 +931,6 @@ bottom_nav_ui <- function(active = "dashboard") {
   div(class = "ct-bottom-nav",
       nav_item("dashboard", nav_icon_program,  "Program"),
       nav_item("progress",  nav_icon_progress, "Progress"),
-      nav_item("friends",   nav_icon_friends,  "Friends"),
       nav_item("profile",   nav_icon_profile,  "Profile")
   )
 }

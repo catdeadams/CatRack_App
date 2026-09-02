@@ -430,32 +430,47 @@ setup_program_server <- function(input, output, session, rv) {
 
     tryCatch({
       # Step through the cascade: set_logs → workout_exercises → workouts → program
-      # Always scope to both program_id AND user_id to prevent cross-user deletes
+      # Always scope to both program_id AND user_id to prevent cross-user deletes.
       wkts <- sb_select("workouts",
         sprintf("?program_id=eq.%s&user_id=eq.%s&select=id", pid, rv$user_id),
         token = rv$token)
 
-      if (!is.null(wkts) && nrow(wkts) > 0) {
-        wkt_ids <- paste(wkts$id, collapse = ",")
-
-        wes <- sb_select("workout_exercises",
-          sprintf("?workout_id=in.(%s)&select=id", wkt_ids),
-          token = rv$token)
-
-        if (!is.null(wes) && nrow(wes) > 0) {
-          we_ids <- paste(wes$id, collapse = ",")
-          sb_delete("workout_set_logs",
-            sprintf("?workout_exercise_id=in.(%s)", we_ids),
+      # Delete child rows in chunks so the in.(...) URL can't blow past
+      # PostgREST/proxy URL-length limits on a 12-week program (200+ ids),
+      # and check every response so we never delete the parent while children
+      # remain (which would orphan set_logs).
+      del_in_chunks <- function(table, key, ids) {
+        ok <- TRUE
+        for (grp in split(ids, ceiling(seq_along(ids) / 50))) {
+          r <- sb_delete(table,
+            sprintf("?%s=in.(%s)", key, paste(grp, collapse = ",")),
             token = rv$token)
+          if (!r$status_code %in% c(200, 201, 204)) ok <- FALSE
         }
+        ok
+      }
 
-        sb_delete("workout_exercises",
-          sprintf("?workout_id=in.(%s)", wkt_ids),
+      cascade_ok <- TRUE
+      if (!is.null(wkts) && nrow(wkts) > 0) {
+        wes <- sb_select("workout_exercises",
+          sprintf("?workout_id=in.(%s)&select=id", paste(wkts$id, collapse = ",")),
           token = rv$token)
-
-        sb_delete("workouts",
+        if (!is.null(wes) && nrow(wes) > 0)
+          cascade_ok <- del_in_chunks("workout_set_logs", "workout_exercise_id", wes$id) && cascade_ok
+        cascade_ok <- del_in_chunks("workout_exercises", "workout_id", wkts$id) && cascade_ok
+        r_w <- sb_delete("workouts",
           sprintf("?program_id=eq.%s&user_id=eq.%s", pid, rv$user_id),
           token = rv$token)
+        if (!r_w$status_code %in% c(200, 201, 204)) cascade_ok <- FALSE
+      }
+
+      if (!cascade_ok) {
+        showNotification(
+          "Couldn't fully remove this program's sessions — nothing was deleted. Please try again.",
+          type = "error", duration = 6)
+        rv$delete_program_id   <- NULL
+        rv$delete_program_name <- NULL
+        return()
       }
 
       resp <- sb_delete("programs",
@@ -588,8 +603,8 @@ setup_program_server <- function(input, output, session, rv) {
         Session  = as.character(wkts$session_label[wo_idx] %||% ""),
         Exercise = ex_names,
         Sets     = as.integer(exs$prescribed_sets %||% NA),
-        Rep_Low  = as.integer(exs$rep_low  %||% NA),
-        Rep_High = as.integer(exs$rep_high %||% NA),
+        Rep_Low  = as.integer(exs$rep_range_low  %||% NA),
+        Rep_High = as.integer(exs$rep_range_high %||% NA),
         RPE      = exs$rpe_target     %||% "",
         Set_Type = exs$set_type       %||% "normal",
         Superset = exs$superset_group %||% "",

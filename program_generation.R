@@ -237,12 +237,12 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
   # substitute assisted/eccentric in block A.
   # `pullup_baseline < 3L` returns NA when baseline is NA, which would
   # crash the `&&` chain — coerce to 0L when missing.
-  pb <- if (is.null(pullup_baseline) || length(pullup_baseline) == 0 ||
-            is.na(pullup_baseline[[1]])) 0L else as.integer(pullup_baseline)
-  pull_pattern <- if (goal == "pull_up" && pb < 3L &&
-                     block_variant == "A")
-                    c("vertical_pull")  # exercise scorer will pick lat pulldown
-                  else c("vertical_pull")
+  # Vertical-pull slots always use the vertical_pull pattern. The
+  # assisted/pulldown-vs-strict decision for sub-3 pull-up users is handled
+  # by score_exercise() (baseline_score) in every block, so no branching is
+  # needed here. (This was previously a no-op if/else returning the same
+  # value on both branches.)
+  pull_pattern <- c("vertical_pull")
 
   key <- paste(split_style, sessions_per_week, session_idx, sep = "_")
 
@@ -255,7 +255,12 @@ build_ideal_session <- function(goal, split_style, sessions_per_week,
   result <- .build_session_inner(goal, split_style, sessions_per_week,
                                  session_idx, block_variant, week_in_block,
                                  pull_pattern, key)
-  if (length(result) == 0 && split_style != "full_body") {
+  # Remap ANY missing key (including an unsupported full_body frequency like
+  # full_body_4_*) onto the defined full_body 2x/3x templates, so a workout
+  # is never generated empty. (Frequency is currently capped at 2/3 in the
+  # UI, but running_support forces full_body regardless of split, so this
+  # guards the whole matrix defensively.)
+  if (length(result) == 0) {
     cat(sprintf("\n  [info] No %s template for %s/%dx/sess %d — falling back to full_body\n",
                 goal, split_style, sessions_per_week, session_idx))
     fb_sessions <- if (sessions_per_week >= 3L) 3L else 2L
@@ -822,7 +827,9 @@ BLOCK_EQUIPMENT_PREF <- list(
 
 # Score: higher is better.
 score_exercise <- function(exercise, slot, block_variant, used_ids,
-                           muscle_deficit, goal, pullup_baseline = 0L) {
+                           muscle_deficit, goal, pullup_baseline = 0L,
+                           prev_block_ids = character(0),
+                           week_used_ids = character(0)) {
   if (exercise$id %in% used_ids) return(-Inf)
 
   # Determine primary muscles for this exercise
@@ -860,19 +867,36 @@ score_exercise <- function(exercise, slot, block_variant, used_ids,
   # prefer lat pulldown / band-assisted variants (downrank "Pull-up" and "Chin-up").
   pb <- if (is.null(pullup_baseline) || length(pullup_baseline) == 0 ||
             is.na(pullup_baseline[[1]])) 0L else as.integer(pullup_baseline)
+  # Sub-3-strict pull-up users get assisted/pulldown biased UP and strict
+  # pull-ups/chin-ups biased DOWN in EVERY block (not just A) — the old code
+  # only did this in Block A, so weeks 5-12 prescribed strict reps a beginner
+  # still can't do. Once the baseline is >= 3 the bias switches off.
   baseline_score <- 0
-  if (goal == "pull_up" && block_variant == "A" && pb < 3L &&
+  if (goal == "pull_up" && pb < 3L &&
       isTRUE(exercise$movement_pattern == "vertical_pull")) {
     nm <- tolower(as.character(exercise$name %||% ""))
-    if (grepl("pulldown", nm))               baseline_score <- 1.5
+    if (grepl("pulldown|assisted", nm))      baseline_score <- 1.5
     else if (grepl("pull-?up|chin-?up", nm)) baseline_score <- -1.5
   }
 
-  base + muscle_score + block_score + baseline_score
+  # Variety penalties: discourage repeating an exercise used in the prior
+  # block (so Blocks A/B/C actually rotate) or already used earlier this
+  # week (so the 2-3 sessions in a week don't all pick the same lift for a
+  # shared movement pattern). Soft — only flips near-ties, never overrides a
+  # clearly-best choice.
+  variety_pen <- 0
+  if (length(prev_block_ids) > 0 && exercise$id %in% prev_block_ids)
+    variety_pen <- variety_pen + 0.7
+  if (length(week_used_ids) > 0 && exercise$id %in% week_used_ids)
+    variety_pen <- variety_pen + 0.4
+
+  base + muscle_score + block_score + baseline_score - variety_pen
 }
 
 pick_exercise_scored <- function(exercises, slot, block_variant, used_ids,
-                                 muscle_deficit, goal, pullup_baseline) {
+                                 muscle_deficit, goal, pullup_baseline,
+                                 prev_block_ids = character(0),
+                                 week_used_ids = character(0), rotation = 0L) {
   if (is.null(exercises) || nrow(exercises) == 0) return(NULL)
 
   cands <- exercises
@@ -885,12 +909,19 @@ pick_exercise_scored <- function(exercises, slot, block_variant, used_ids,
 
   scores <- vapply(seq_len(nrow(cands)), function(i)
     score_exercise(cands[i, ], slot, block_variant, used_ids,
-                   muscle_deficit, goal, pullup_baseline),
+                   muscle_deficit, goal, pullup_baseline,
+                   prev_block_ids, week_used_ids),
     numeric(1))
 
-  best_idx <- which.max(scores)
-  if (length(best_idx) == 0 || !is.finite(scores[best_idx])) return(NULL)
-  cands[best_idx, ]
+  best <- max(scores)
+  if (!is.finite(best)) return(NULL)
+  # Among all top-scoring ties, rotate the pick by `rotation` instead of
+  # always taking the alphabetically-first (which.max). This is what lets a
+  # limited-equipment user still see different exercises across blocks and
+  # sessions when several candidates score equally.
+  top <- which(scores >= best - 1e-9)
+  idx <- top[(as.integer(rotation) %% length(top)) + 1L]
+  cands[idx, ]
 }
 
 # ============================================================
@@ -900,7 +931,9 @@ slot_time_cost <- function(slot) {
   cost <- switch(slot$role,
     heavy      = SLOT_TIME_COST$heavy_compound,
     compound   = SLOT_TIME_COST$compound,
-    isolation  = SLOT_TIME_COST$isolation,
+    plyometric = SLOT_TIME_COST$plyometric %||% 7,
+    isolation  = if (isTRUE(slot$set_type == "isometric"))
+                   (SLOT_TIME_COST$isometric %||% 5) else SLOT_TIME_COST$isolation,
     SLOT_TIME_COST$compound)
   # Supersets are paired — share fixed rest, count as 1.5× a solo
   if (!is.na(slot$superset_group %||% NA))
@@ -908,15 +941,34 @@ slot_time_cost <- function(slot) {
   cost
 }
 
+# Trim priority — higher survives longer. Protects the work that DEFINES a
+# goal (heavy lifts + their back-offs, plyometrics, isometric holds, and
+# compounds incl. loaded carries), plus calf/core isolation, and trims the
+# generic hypertrophy accessories (biceps, triceps, lateral raises, rear
+# delts, chest flys) FIRST. The old trim removed trailing isolation by
+# position, which stripped a runner's calf/core/plyo before a bodybuilder's
+# arm work and collapsed 30-min sessions to two lifts.
+slot_priority <- function(slot) {
+  cats <- slot$categories %||% character(0)
+  if (isTRUE(slot$role == "heavy"))         return(100L)
+  if (isTRUE(slot$reuse_heavy))             return(90L)   # back-off tied to the heavy lift
+  if (isTRUE(slot$role == "plyometric"))    return(88L)
+  if (isTRUE(slot$set_type == "isometric")) return(82L)   # tendon / soleus / quad holds
+  if (isTRUE(slot$role == "compound"))      return(70L)   # incl. loaded carries (locomotion)
+  if (any(c("calves", "core") %in% cats))   return(55L)   # goal-defining isolation
+  return(30L)                                             # generic accessory isolation
+}
+
 trim_to_budget <- function(slots, budget_min) {
   if (length(slots) == 0) return(slots)
   total <- sum(vapply(slots, slot_time_cost, numeric(1)))
   while (total > budget_min && length(slots) > 2) {
-    # Drop the last isolation; if no isolations, drop last slot
-    iso_idx <- which(vapply(slots, \(s) s$role == "isolation", logical(1)))
-    drop_idx <- if (length(iso_idx) > 0) tail(iso_idx, 1) else length(slots)
-    slots <- slots[-drop_idx]
-    total <- sum(vapply(slots, slot_time_cost, numeric(1)))
+    pr       <- vapply(slots, slot_priority, integer(1))
+    lowest   <- min(pr)
+    # Among the lowest-priority slots, drop the last (latest) one.
+    drop_idx <- tail(which(pr == lowest), 1)
+    slots    <- slots[-drop_idx]
+    total    <- sum(vapply(slots, slot_time_cost, numeric(1)))
   }
   slots
 }
@@ -928,7 +980,10 @@ trim_to_budget <- function(slots, budget_min) {
 instantiate_session <- function(slots, exercises, goal, difficulty,
                                 block_variant, week_in_block,
                                 weekly_targets, sets_already_scheduled,
-                                pullup_baseline = 0L) {
+                                pullup_baseline = 0L,
+                                prev_block_ids = character(0),
+                                week_used_ids = character(0),
+                                session_rotation = 0L) {
   used_ids    <- character(0)
   heavy_ex_id <- NULL
   result      <- list()
@@ -949,18 +1004,35 @@ instantiate_session <- function(slots, exercises, goal, difficulty,
     } else {
       chosen <- pick_exercise_scored(exercises, slot, block_variant,
                                      used_ids, muscle_deficit, goal,
-                                     pullup_baseline)
+                                     pullup_baseline, prev_block_ids,
+                                     week_used_ids, session_rotation)
     }
     if (is.null(chosen) || nrow(chosen) == 0) next
     if (slot$role == "heavy") heavy_ex_id <- chosen$id
 
-    # Week-in-block volume modifier on sets
-    week_mult <- WEEK_IN_BLOCK_PROFILES[[as.character(week_in_block)]]$volume_mult %||% 1.0
-    adj_sets  <- max(1L, round(slot$sets * week_mult))
+    # Set progression that the athlete actually sees (the old week_mult
+    # rounded to a flat count and block_mult never touched sets at all):
+    #   • Block C adds a set to heavy + compound work (accumulation → MRV)
+    #   • Peak week (week 3) adds one more set to the heavy lift
+    #   • Deload week (week 4) roughly halves the sets
+    # Weeks 1-2 progress by LOAD (double progression + tightening RIR).
+    if (week_in_block == 4L) {
+      adj_sets <- max(1L, round(slot$sets * 0.5))
+    } else {
+      adj_sets <- slot$sets
+      if (block_variant == "C" && slot$role %in% c("heavy", "compound"))
+        adj_sets <- adj_sets + 1L
+      if (week_in_block == 3L && slot$role == "heavy")
+        adj_sets <- adj_sets + 1L
+    }
+    adj_sets <- as.integer(max(1L, adj_sets))
 
-    # Update deficit map
+    # Update deficit map — but only for real hypertrophy volume. Plyometric
+    # and isometric-hold slots are neurological / tendon work, not volume
+    # landmarks, so they must not "fill" a muscle's weekly set target.
+    is_volume <- !(isTRUE(slot$set_type %in% c("plyometric", "isometric")))
     prim <- tryCatch(unlist(chosen$primary_muscles), error = \(e) character(0))
-    for (m in prim) {
+    if (is_volume) for (m in prim) {
       muscle_deficit[[m]] <- max(0, (muscle_deficit[[m]] %||% 0) - adj_sets)
     }
 
@@ -986,9 +1058,11 @@ instantiate_session <- function(slots, exercises, goal, difficulty,
     order_idx <- order_idx + 1L
   }
 
-  # Return scheduled sets per muscle so caller can carry into next session
+  # Return scheduled sets per muscle so caller can carry into next session.
+  # Skip plyometric/isometric slots — they aren't hypertrophy volume.
   sets_added <- list()
   for (ea in result) {
+    if (isTRUE(ea$set_type %in% c("plyometric", "isometric"))) next
     ex <- exercises[exercises$id == ea$exercise_id, ]
     if (nrow(ex) == 0) next
     prim <- tryCatch(unlist(ex$primary_muscles), error = \(e) character(0))
@@ -997,7 +1071,9 @@ instantiate_session <- function(slots, exercises, goal, difficulty,
     }
   }
 
-  list(exercises = result, sets_added = sets_added)
+  # used_ids lets the caller accumulate per-week and per-block exercise sets
+  # for the variety penalties in score_exercise.
+  list(exercises = result, sets_added = sets_added, used_ids = used_ids)
 }
 
 # ============================================================
@@ -1196,9 +1272,23 @@ generate_program <- function(
 
   tryCatch({
 
+  # Variety state (see score_exercise variety penalties + pick rotation)
+  prev_block_ids     <- character(0)   # exercise ids used in the previous block
+  current_block_ids  <- character(0)   # exercise ids used in the block in progress
+  last_block_variant <- NULL
+
   for (week in 1:12) {
     block_variant <- c("A","B","C")[ceiling(week / 4)]
     week_in_block <- ((week - 1) %% 4) + 1
+
+    # Roll block-variety state at each block boundary; reset week-variety
+    # state every week.
+    if (!is.null(last_block_variant) && block_variant != last_block_variant) {
+      prev_block_ids    <- current_block_ids
+      current_block_ids <- character(0)
+    }
+    last_block_variant <- block_variant
+    week_used_ids      <- character(0)
 
     cat(sprintf("\n  Week %02d [Block %s %s]",
                 week, block_variant,
@@ -1237,14 +1327,24 @@ generate_program <- function(
       workout_id <- sb_insert_one("workouts", workout_row)
       if (is.null(workout_id)) { cat("\n    WARN: workout insert failed\n"); next }
 
+      # Rotation seed varies by block and session so tied-score picks differ.
+      session_rotation <- (match(block_variant, c("A","B","C")) - 1L) * 3L + sess_idx
+
       sess <- instantiate_session(slots, exercises, goal, difficulty,
                                   block_variant, week_in_block,
                                   week_targets, sets_scheduled,
-                                  pullup_baseline)
+                                  pullup_baseline,
+                                  prev_block_ids   = prev_block_ids,
+                                  week_used_ids    = week_used_ids,
+                                  session_rotation = session_rotation)
 
       # Carry sets forward so later sessions know what's already covered
       for (m in names(sess$sets_added))
         sets_scheduled[[m]] <- (sets_scheduled[[m]] %||% 0) + sess$sets_added[[m]]
+
+      # Accumulate exercise ids for the variety penalties
+      week_used_ids     <- union(week_used_ids,     sess$used_ids %||% character(0))
+      current_block_ids <- union(current_block_ids, sess$used_ids %||% character(0))
 
       # Write workout_exercises rows
       if (length(sess$exercises) > 0) {
@@ -1418,9 +1518,23 @@ regenerate_remaining_weeks <- function(
 
   total_sessions <- 0L; total_exercises <- 0L
 
+  # Variety state (matches generate_program). prev_block_ids starts empty —
+  # the first regenerated block has no prior-block set to avoid, which is
+  # fine; block boundaries within the regenerated range still rotate.
+  prev_block_ids     <- character(0)
+  current_block_ids  <- character(0)
+  last_block_variant <- NULL
+
   for (week in from_week:12) {
     block_variant <- c("A","B","C")[ceiling(week / 4)]
     week_in_block <- ((week - 1) %% 4) + 1
+
+    if (!is.null(last_block_variant) && block_variant != last_block_variant) {
+      prev_block_ids    <- current_block_ids
+      current_block_ids <- character(0)
+    }
+    last_block_variant <- block_variant
+    week_used_ids      <- character(0)
 
     cat(sprintf("\n  Week %02d [Block %s %s]",
                 week, block_variant,
@@ -1456,13 +1570,21 @@ regenerate_remaining_weeks <- function(
       workout_id <- sb_insert_one("workouts", workout_row)
       if (is.null(workout_id)) { cat("\n    WARN: workout insert failed\n"); next }
 
+      session_rotation <- (match(block_variant, c("A","B","C")) - 1L) * 3L + sess_idx
+
       sess <- instantiate_session(slots, exercises, goal, difficulty,
                                   block_variant, week_in_block,
                                   week_targets, sets_scheduled,
-                                  pullup_baseline)
+                                  pullup_baseline,
+                                  prev_block_ids   = prev_block_ids,
+                                  week_used_ids    = week_used_ids,
+                                  session_rotation = session_rotation)
 
       for (m in names(sess$sets_added))
         sets_scheduled[[m]] <- (sets_scheduled[[m]] %||% 0) + sess$sets_added[[m]]
+
+      week_used_ids     <- union(week_used_ids,     sess$used_ids %||% character(0))
+      current_block_ids <- union(current_block_ids, sess$used_ids %||% character(0))
 
       if (length(sess$exercises) > 0) {
         ex_rows <- lapply(sess$exercises, function(ea) {

@@ -96,6 +96,15 @@ make_session_timer_js <- function(workout_id) {
 }
 
 
+# Count only real (non-NULL) set logs. rv$set_logs[[we_id]] is a sparse list
+# keyed by set_number, so length() overcounts when a set is skipped or logged
+# out of order (e.g. logging the heavy top set first marked the whole exercise
+# 100% done). Completion checks must use this, never length().
+.n_logged <- function(logs) {
+  if (is.null(logs) || length(logs) == 0) return(0L)
+  sum(!vapply(logs, is.null, logical(1)))
+}
+
 # ── EXERCISE HISTORY ─────────────────────────────────────────
 fetch_exercise_history <- function(exercise_id, user_id, token, n_sessions = 5) {
   we_ids <- tryCatch(
@@ -248,10 +257,19 @@ suggest_weight <- function(last_log, target_reps, week_number) {
   if (is.null(rir) || is.na(rir))
     rir <- tryCatch(BLOCK_PROFILES[[block]]$rir_target %||% 2.0, error = \(e) 2.0)
 
+  # Deload week (week-in-block 4): the +2 RIR modifier only lightens the load
+  # ~5%, but the deload banner + methodology call for ~40% lighter at the same
+  # reps. So compute at the block's normal RIR and apply an explicit 0.6
+  # factor, so the suggestion actually matches the coaching.
+  deload <- isTRUE(wib == 4L)
+  if (deload) rir <- tryCatch(BLOCK_PROFILES[[block]]$rir_target %||% 2.0, error = \(e) 2.0)
+
   effort_reps <- as.numeric(target_reps) + as.numeric(rir)
   pct_1rm     <- 1 / (1 + effort_reps / 30)
+  wt          <- e1rm * pct_1rm
+  if (deload) wt <- wt * 0.6
 
-  round(e1rm * pct_1rm / 2.5) * 2.5
+  round(wt / 2.5) * 2.5
 }
 
 # ── EXERCISE GROUP BUILDER ───────────────────────────────────
@@ -294,7 +312,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
   completed <- sum(sapply(seq_len(n_ex), function(i) {
     we_id <- exercises$id[i]
     logs  <- set_logs_rv[[we_id]]
-    !is.null(logs) && length(logs) >= exercises$prescribed_sets[i]
+    .n_logged(logs) >= exercises$prescribed_sets[i]
   }))
   pct <- if (n_ex > 0) round(100 * completed / n_ex) else 0L
 
@@ -356,7 +374,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
             lapply(seq_len(n_ex), function(i) {
               we_id <- exercises$id[i]
               logs  <- set_logs_rv[[we_id]]
-              done  <- !is.null(logs) && length(logs) >= exercises$prescribed_sets[i]
+              done  <- .n_logged(logs) >= exercises$prescribed_sets[i]
               div(style = paste0("flex:1; border-radius:2px; background:",
                                  if (done) "#1D9E75" else "#222", ";"))
             })
@@ -422,7 +440,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
       block_done <- all(sapply(row_indices, function(i) {
         we_id <- exercises$id[i]
         logs  <- set_logs_rv[[we_id]]
-        !is.null(logs) && length(logs) >= exercises$prescribed_sets[i]
+        .n_logged(logs) >= exercises$prescribed_sets[i]
       }))
 
       # Meta from first exercise in the block
@@ -523,7 +541,7 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
               }
             }, error = \(e) NULL)
             we_logs  <- set_logs_rv[[we$id]] %||% list()
-            n_logged <- length(we_logs)
+            n_logged <- .n_logged(we_logs)
             is_complete <- n_logged >= we$prescribed_sets
 
             ex_last_note <- tryCatch({
@@ -1453,6 +1471,9 @@ setup_workout_server <- function(input, output, session, rv) {
 
   # ── Close workout ────────────────────────────────────────────
   observeEvent(input$close_workout, {
+    if (!is.null(rv$active_workout_id))
+      session$sendCustomMessage("clear_ws_start",
+        list(workout_id = rv$active_workout_id))
     rv$page    <- "dashboard"
     rv$nav_tab <- "dashboard"
     rv$active_workout_id <- NULL
@@ -1624,7 +1645,25 @@ setup_workout_server <- function(input, output, session, rv) {
     # ── PR detection ─────────────────────────────────────────────
     tryCatch({
       if (length(rv$set_logs) > 0 && !is.null(rv$active_exercises)) {
+        # Track running bests in a 3-column frame. fetch_prs() returns a
+        # full-width row (select=*), so appending a 3-column data.frame to it
+        # used to throw an rbind column-count mismatch — swallowed by the
+        # outer tryCatch, which aborted PR detection after the FIRST PR of the
+        # session (every later PR silently lost). Normalise up front so every
+        # append matches, and update the best IN PLACE so a later, smaller set
+        # can't overwrite a bigger one earlier in the session.
+        pr_cols <- c("exercise_name", "max_weight_lbs", "reps_at_max_weight")
         existing_prs <- rv$prs
+        if (!is.null(existing_prs) && is.data.frame(existing_prs) &&
+            nrow(existing_prs) > 0 && all(pr_cols %in% names(existing_prs))) {
+          existing_prs <- existing_prs[, pr_cols, drop = FALSE]
+        } else {
+          existing_prs <- data.frame(exercise_name = character(0),
+                                     max_weight_lbs = numeric(0),
+                                     reps_at_max_weight = integer(0),
+                                     stringsAsFactors = FALSE)
+        }
+
         for (we_id in names(rv$set_logs)) {
           we_row <- rv$active_exercises[rv$active_exercises$id == we_id, ]
           if (nrow(we_row) == 0) next
@@ -1639,39 +1678,35 @@ setup_workout_server <- function(input, output, session, rv) {
             e1rm <- estimate_1rm(w, r)
             if (is.na(e1rm) || e1rm <= 0) next
 
-            is_pr <- TRUE
-            if (!is.null(existing_prs) && nrow(existing_prs) > 0) {
-              ex_pr <- existing_prs[existing_prs$exercise_name == ex_name, ]
-              if (nrow(ex_pr) > 0) {
-                old_e1rm <- estimate_1rm(
-                  as.numeric(ex_pr$max_weight_lbs[1]),
-                  as.integer(ex_pr$reps_at_max_weight[1]))
-                if (!is.na(old_e1rm) && e1rm <= old_e1rm) is_pr <- FALSE
-              }
-            }
+            # Compare against the running best for this exercise (updated in
+            # place below), not the first row — so the DB never regresses.
+            row_idx  <- which(existing_prs$exercise_name == ex_name)
+            old_e1rm <- if (length(row_idx) > 0)
+              estimate_1rm(as.numeric(existing_prs$max_weight_lbs[row_idx[1]]),
+                           as.integer(existing_prs$reps_at_max_weight[row_idx[1]]))
+              else NA_real_
+            if (!is.na(old_e1rm) && e1rm <= old_e1rm) next  # not a PR
 
-            if (is_pr) {
-              sb_upsert("personal_records",
-                        list(user_id            = rv$user_id,
-                             exercise_name      = ex_name,
-                             exercise_id        = ex_id,
-                             max_weight_lbs     = w,
-                             reps_at_max_weight = as.integer(r),
-                             last_logged_at     = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ")),
-                        token = rv$token)
-              showNotification(
-                paste0("New PR! ", ex_name, " — ~", round(e1rm), " lbs est. 1RM"),
-                type = "message", duration = 5)
-              if (is.null(existing_prs)) {
-                existing_prs <- data.frame(exercise_name = ex_name,
-                                           max_weight_lbs = w,
-                                           reps_at_max_weight = r,
-                                           stringsAsFactors = FALSE)
-              } else {
-                existing_prs <- rbind(existing_prs,
-                  data.frame(exercise_name = ex_name, max_weight_lbs = w,
-                             reps_at_max_weight = r, stringsAsFactors = FALSE))
-              }
+            sb_upsert("personal_records",
+                      list(user_id            = rv$user_id,
+                           exercise_name      = ex_name,
+                           exercise_id        = ex_id,
+                           max_weight_lbs     = w,
+                           reps_at_max_weight = as.integer(r),
+                           last_logged_at     = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ")),
+                      token = rv$token)
+            showNotification(
+              paste0("New PR! ", ex_name, " — ~", round(e1rm), " lbs est. 1RM"),
+              type = "message", duration = 5)
+
+            if (length(row_idx) > 0) {
+              existing_prs$max_weight_lbs[row_idx[1]]     <- w
+              existing_prs$reps_at_max_weight[row_idx[1]] <- as.integer(r)
+            } else {
+              existing_prs <- rbind(existing_prs,
+                data.frame(exercise_name = ex_name, max_weight_lbs = w,
+                           reps_at_max_weight = as.integer(r),
+                           stringsAsFactors = FALSE))
             }
           }
         }
@@ -1702,6 +1737,9 @@ setup_workout_server <- function(input, output, session, rv) {
       notes         = ""
     )
 
+    if (!is.null(rv$active_workout_id))
+      session$sendCustomMessage("clear_ws_start",
+        list(workout_id = rv$active_workout_id))
     rv$active_workout_id <- NULL
     rv$active_workout    <- NULL
     rv$active_exercises  <- NULL

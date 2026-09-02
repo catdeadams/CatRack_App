@@ -245,6 +245,11 @@ ui <- page_fluid(
     )
   ),
   div(class = "ct-app",
+      # Reliability runtime (heartbeat, reconnect self-heal, session/last-view
+      # restore, back-guard, offline banner). Mounted once here so it loads on
+      # every page — it used to live inside the login screen, which the kiosk
+      # auto-login no longer shows.
+      catrack_runtime_js(),
       uiOutput("main_ui")
   )
 )

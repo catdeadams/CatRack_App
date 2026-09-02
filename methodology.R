@@ -115,6 +115,8 @@ SLOT_TIME_COST <- list(
   heavy_compound = 12,  # ~3 working sets + 2 warmups, 3 min rest
   compound       = 10,  # 3 working sets, 2-3 min rest
   isolation      = 5,   # 2 sets, 60-90s rest
+  plyometric     = 7,   # 3 explosive sets, low reps but long-ish recovery
+  isometric      = 5,   # short timed holds
   superset_block = 8    # paired isolation, ~1.5x a solo isolation
 )
 
@@ -312,13 +314,13 @@ methodology_modal_ui <- function() {
       div(style = "background:#161616; border:1px solid #222; border-radius:10px;
                    padding:12px 14px; margin-bottom:14px; font-size:11px; color:#aaa; line-height:1.6;",
           tags$b(style = "color:#5DCAA5;", "Week 1 — Base."),
-          " 85% of target volume, RIR +0.5. Establish working weights.", br(), br(),
+          " Establish working weights at the block's RIR. Same exercises for the block so you can track load week to week.", br(), br(),
           tags$b(style = "color:#5DCAA5;", "Week 2 — Build."),
-          " Full target volume, prescribed RIR.", br(), br(),
+          " Add weight or reps (double progression) as the sets get easier.", br(), br(),
           tags$b(style = "color:#5DCAA5;", "Week 3 — Peak."),
-          " 105% volume, RIR -0.5. The hardest week.", br(), br(),
+          " RIR tightens (−0.5) and your main lift gets an extra set. The hardest week — push the load.", br(), br(),
           tags$b(style = "color:#5DCAA5;", "Week 4 — Deload."),
-          " 60% volume, RIR +2. Reduce weight ~40%, same exercises, same reps. Adaptation happens here."
+          " Sets roughly halved and the suggested weight drops ~40%, same exercises and reps. Adaptation happens here."
       ),
 
       # ── Goals

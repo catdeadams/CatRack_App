@@ -22,7 +22,7 @@ server <- function(input, output, session) {
     auth_error   = NULL,
     
     # App navigation
-    page         = "login",   # login | onboarding | dashboard | workout | progress | friends
+    page         = "loading",  # loading | login | onboarding | dashboard | workout | progress
     nav_tab      = "dashboard",
     
     # User profile + program
@@ -57,14 +57,7 @@ server <- function(input, output, session) {
     all_logs           = NULL,
     prs                = NULL,
     selected_exercise  = NULL,
-    leaderboard        = NULL,
-    group_members      = NULL,
-    invite_code        = NULL,
-    member_streaks     = NULL,
-    member_1rm         = NULL,
-    hidden_exercises   = character(0),
-    activity_feed      = NULL,
-    
+
     # Profile editing
     profile_edit        = list(),
     recovery_token      = NULL,
@@ -127,14 +120,6 @@ server <- function(input, output, session) {
         return()
       }
 
-      rv$hidden_exercises <- tryCatch({
-        raw <- rv$profile$hidden_from_leaderboard
-        if (!is.null(raw) && length(raw) > 0) {
-          vals <- unlist(raw)
-          vals[!is.na(vals) & nchar(vals) > 0]
-        } else character(0)
-      }, error = \(e) character(0))
-      
       # Load active program
       program    <- sb_select("programs",
                               sprintf("?user_id=eq.%s&is_active=eq.true&order=created_at.desc&limit=1",
@@ -190,7 +175,41 @@ server <- function(input, output, session) {
       message("refresh_workouts error: ", conditionMessage(e))
     })
   }
-  
+
+  # ── KIOSK AUTO-LOGIN ───────────────────────────────────────
+  # Single-user app: sign in automatically as the owner from CATRACK_EMAIL /
+  # CATRACK_PASSWORD (global.R) so there is no login screen. Runs once at
+  # session start. RLS still applies (a real user JWT is obtained). Falls back
+  # to the manual login form if the creds are missing or rejected, so the app
+  # never bricks. The localStorage session-restore path still works: since
+  # rv$token is set here first, restore_session_refresh no-ops.
+  kiosk_login <- function() {
+    if (!is.null(rv$token)) return()
+    if (nchar(CATRACK_EMAIL) == 0 || nchar(CATRACK_PASSWORD) == 0) {
+      rv$page <- "login"; return()
+    }
+    result    <- tryCatch(sb_login(CATRACK_EMAIL, CATRACK_PASSWORD), error = \(e) NULL)
+    token_val <- tryCatch(result$body$access_token, error = \(e) NULL)
+    if (!is.null(result) && isTRUE(result$status %in% c(200, 201)) &&
+        !is.null(token_val) && nchar(token_val) > 0) {
+      rv$token          <- token_val
+      rv$refresh_token  <- tryCatch(result$body$refresh_token, error = \(e) NULL)
+      rv$token_acquired <- Sys.time()
+      rv$user_id        <- tryCatch(result$body$user$id,    error = \(e) NULL)
+      rv$user_email     <- tryCatch(result$body$user$email, error = \(e) NULL)
+      if (!is.null(rv$user_id))
+        tryCatch(load_user_data(), error = \(e) { rv$page <- "login" })
+      else
+        rv$page <- "login"
+    } else {
+      rv$page       <- "login"
+      rv$auth_error <- "Auto-login unavailable — enter your credentials to continue."
+    }
+  }
+  # Run once at startup, inside a reactive context — rv is a reactiveValues and
+  # cannot be read/written from the plain server body.
+  observeEvent(TRUE, kiosk_login(), once = TRUE, ignoreInit = FALSE)
+
   # ── AUTH: switch login/signup mode ─────────────────────────
   observeEvent(input$switch_auth_mode, {
     rv$auth_mode  <- input$switch_auth_mode
@@ -447,8 +466,13 @@ server <- function(input, output, session) {
   output$main_ui <- renderUI({
     
     page <- rv$page
-    
-    # ── Login / Signup ──
+
+    # ── Loading splash (while kiosk auto-login runs) ──
+    if (page == "loading") {
+      return(loading_page_ui())
+    }
+
+    # ── Login (manual fallback only — normally auto-login skips this) ──
     if (page == "login") {
       return(tagList(
         login_page_ui(mode = rv$auth_mode),
@@ -567,27 +591,6 @@ server <- function(input, output, session) {
                                             )
                            ),
                            
-                           "friends" = div(class = "ct-content-with-nav",
-                                           friends_screen_ui(
-                                             profile             = rv$profile,
-                                             group_members       = rv$group_members,
-                                             leaderboard_data    = rv$leaderboard,
-                                             invite_code         = rv$invite_code,
-                                             member_streaks      = rv$member_streaks,
-                                             member_1rm          = rv$member_1rm,
-                                             hidden_exercises    = rv$hidden_exercises,
-                                             user_exercise_names = tryCatch(
-                                               sort(unique(na.omit(sapply(
-                                                 seq_len(nrow(rv$all_logs %||% data.frame())),
-                                                 \(i) get_ex_name(rv$all_logs, i))))),
-                                               error = \(e) character(0)),
-                                             adjusted_my_volume  = if (length(rv$hidden_exercises) > 0)
-                                               compute_adjusted_volume(rv$all_logs, rv$hidden_exercises)
-                                             else NULL,
-                                             activity_feed       = rv$activity_feed
-                                           )
-                           ),
-                           
                            "programs" = div(class = "ct-content-with-nav",
                                             programs_page_ui(
                                               active_program      = if (!is.null(rv$all_programs) && nrow(rv$all_programs) > 0) {
@@ -664,6 +667,13 @@ server <- function(input, output, session) {
        });
        Shiny.addCustomMessageHandler('reset_session_timer', function(msg) {
          window.catrackWsStart = Date.now();
+       });
+       // Clear the persisted session-start on explicit close/finish so a
+       // later reopen of the same workout starts a fresh elapsed timer
+       // (reconnect mid-session does NOT clear it, so it still resumes).
+       Shiny.addCustomMessageHandler('clear_ws_start', function(msg) {
+         if (msg && msg.workout_id)
+           localStorage.removeItem('catrack_ws_start_' + msg.workout_id);
        });"
     ))
   })
@@ -681,10 +691,10 @@ server <- function(input, output, session) {
       session$sendCustomMessage("trigger_input",
         list(name = "start_from_preview", value = view$workout_id))
     } else if (nchar(view$page %||% "") > 0 &&
-               view$page %in% c("dashboard","progress","friends","profile",
+               view$page %in% c("dashboard","progress","profile",
                                 "programs","preview","summary")) {
       rv$page    <- view$page
-      rv$nav_tab <- if (view$page %in% c("dashboard","progress","friends","profile"))
+      rv$nav_tab <- if (view$page %in% c("dashboard","progress","profile"))
                       view$page else "dashboard"
     }
   }
@@ -795,13 +805,6 @@ server <- function(input, output, session) {
     rv$workouts     <- NULL
     rv$all_logs     <- NULL
     rv$prs          <- NULL
-    rv$leaderboard      <- NULL
-    rv$group_members    <- NULL
-    rv$invite_code      <- NULL
-    rv$member_streaks   <- NULL
-    rv$member_1rm       <- NULL
-    rv$hidden_exercises <- character(0)
-    rv$activity_feed    <- NULL
     rv$all_programs     <- NULL
     rv$delete_program_id   <- NULL
     rv$delete_program_name <- NULL
@@ -811,7 +814,6 @@ server <- function(input, output, session) {
     rv$pw_reset_error <- NULL
     rv$set_logs       <- list()
     rv$exercise_history <- list()
-    rv$activity_feed    <- NULL
     rv$auth_mode    <- "login"
     rv$auth_error   <- NULL
     rv$page         <- "login"

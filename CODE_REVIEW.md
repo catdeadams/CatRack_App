@@ -122,3 +122,79 @@ All seven edited R files pass `parse()` with R 4.3.3. No functional/runtime
 testing was performed (requires a live Supabase session). Recommend a manual
 smoke test of: finish-session PR detection, Progress charts, CSV export, and
 PWA reinstall (service worker cache bumped to v4).
+
+---
+
+# 2026-09 Refactor — single-user, no social, better programming
+
+_Date: 2026-09-01_
+
+Owner-approved sweep: remove social, auto-login (no sign-in screen), fix bugs,
+and overhaul the programming engine. All existing tracked data preserved.
+
+## Social / friends — removed
+Deleted the Friends tab, leaderboard, groups, activity feed, and exercise-privacy
+(`friends_screen_ui` + all group/leaderboard/streak/1RM/feed helpers in
+`progress_screen.R`; the friends route, social reactive state, and resets in
+`server.R`; the nav item + icon + back-guard entry in `global.R`). Kept
+`display_name` (it names programs; reworded "shown to friends" copy). The DB
+tables `friend_groups` / `friend_group_members` / `leaderboard_weekly_volume` and
+the `user_profiles.friend_group_id` / `hidden_from_leaderboard` columns are left
+in place (non-destructive) — the code just stops reading them.
+
+## Auth — kiosk auto-login (RLS kept)
+`server.R` auto-signs-in as the owner at startup from `CATRACK_EMAIL` /
+`CATRACK_PASSWORD` env vars (email defaults to the owner's), so there is no login
+screen. A real user JWT is obtained, so RLS still applies. The reliability JS
+(heartbeat, reconnect self-heal, session/last-view restore, back-guard, offline
+banner) was extracted from `login_page_ui` into `catrack_runtime_js()` and mounted
+once in `ui.R` so it loads on every page. Falls back to a login-only form if the
+creds are unset/rejected (never bricks). **Set `CATRACK_PASSWORD` in Posit Connect
+env vars (and `.Renviron` locally) to activate auto-login.**
+
+## Bugs fixed
+- **PR detection** (`workout_screen.R`): an `rbind` column mismatch aborted PR
+  detection after the first PR of a session for any returning user — normalised
+  the frame and compare against the running best (no more regressions).
+- **Deload load** (`suggest_weight`): now suggests ~40% lighter in week 4 to match
+  the deload banner (was ~5%).
+- **Completion counts** (`workout_screen.R`): count non-NULL sparse-list entries so
+  logging the last set first no longer marks an exercise 100% done.
+- **CSV export** (`program_screen.R`): use `rep_range_low/high` (was `rep_low/high`
+  → always blank).
+- **Zero-set summary** crash guard (`workout_summary.R`).
+- **Delete cascade** (`program_screen.R`): chunk `in.()` id lists + check responses
+  so a large program's children can't be orphaned.
+- **Session duration**: clear the persisted start on close/finish so reopening a
+  workout doesn't inflate the recorded time.
+
+## Programming engine (`program_generation.R` + `methodology.R`)
+- **Variety**: anti-repeat penalty vs the previous block + within-week soft
+  penalty, and a rotation among tied top picks (replaces the alphabetical
+  tie-break). Blocks A/B/C now actually rotate exercises even on limited gear.
+- **Progression**: Block C adds a set to heavy/compound work; peak week adds a
+  set to the main lift; deload halves sets (block_mult now reaches the real
+  prescription, not just the scoring target).
+- **Trim** is priority-based: protects heavy lifts, plyometrics, isometric holds,
+  compounds/carries, and calf/core over generic accessories, so 30-min running /
+  functional sessions no longer collapse to two lifts.
+- Plyometric/isometric slots no longer count toward hypertrophy MAV.
+- Pull-up assist (assisted/pulldown bias for sub-3 users) now applies in every
+  block, not just Block A. Dead no-op pull-pattern branch removed. `full_body`
+  missing-key fallback hardened.
+
+## DB migration (`db_migrate_2026_09.R`, idempotent — already run)
+- Renamed **"Kettlebell Swing" → "Dumbbell Swing"** (it required only dumbbells —
+  the source of the "kettlebell prescribed" complaint; labels are never stored).
+- Fixed **Nordic Ham Curl** equipment (`lat_pulldown_machine` → `bodyweight`).
+- Added the **plyometric + isometric-hold** library (`seed_running_exercises.R`
+  had never been run on this DB, so running-support was silently dropping every
+  jump/hold) + bodyweight/cable **hip-abduction** fallbacks.
+
+## Data preservation
+The owner's active program was regenerated from the first un-logged week only
+(`from_week` computed to keep every week with a completed/logged session).
+Verified before/after: `workout_set_logs` 350→350, `workouts` 72→72, PRs
+untouched. Verified via parse (all files, R 4.3.3), full app load, generator
+dry-run, live regeneration, and an app boot (which caught + fixed a reactive-
+context crash in the kiosk-login call). `manifest.json` regenerated (R 4.4.0).
