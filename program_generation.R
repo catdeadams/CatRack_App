@@ -1039,18 +1039,28 @@ instantiate_session <- function(slots, exercises, goal, difficulty,
     # Warm-up sets: 2 for heavy, 1 for compound, 0 for isolation
     warmup_n <- switch(slot$role, heavy = 2L, compound = 1L, 0L)
 
+    # Loaded carries track time/steps, not reps — flag the set_type and give a
+    # time-based "rep" range so the workout screen shows carry guidance and the
+    # number reads as seconds, not reps. (A generic locomotion slot may resolve
+    # to a carry, a sled, or a get-up; only actual carries get this treatment.)
+    is_carry     <- isTRUE(grepl("carry", tolower(chosen$name %||% "")))
+    set_type_out <- if (is_carry) "carry" else slot$set_type
+    rl_out       <- if (is_carry) 20L else as.integer(slot$rep_range_low)
+    rh_out       <- if (is_carry) 40L else as.integer(slot$rep_range_high)
+    warmup_out   <- if (is_carry) 0L  else warmup_n
+
     result[[order_idx]] <- list(
       exercise_id    = chosen$id,
       exercise_name  = chosen$name,
       slot_label     = slot$label,
       exercise_order = order_idx,
       prescribed_sets = as.integer(adj_sets),
-      rep_range_low  = as.integer(slot$rep_range_low),
-      rep_range_high = as.integer(slot$rep_range_high),
+      rep_range_low  = as.integer(rl_out),
+      rep_range_high = as.integer(rh_out),
       rpe_target     = round(rpe, 1),
       rest_seconds   = as.integer(slot$rest_seconds),
-      set_type       = slot$set_type,
-      warmup_sets    = warmup_n,
+      set_type       = set_type_out,
+      warmup_sets    = warmup_out,
       superset_group = slot$superset_group %||% NA_character_
     )
 

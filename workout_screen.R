@@ -692,6 +692,16 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                           "font-size:11px; color:#5DCAA5; margin-bottom:8px;"),
                         "EXPLOSIVE — maximal intent, full recovery between sets. Stop if reps slow down; this is for power, not fatigue."),
 
+                  # Loaded-carry notice — reps field = time held / steps taken
+                  if (!is.null(we$set_type) && !is.na(we$set_type) && we$set_type == "carry")
+                    div(style = paste0(
+                          "background:#14100a; border-left:2px solid #C98A2B;",
+                          "border-radius:0 7px 7px 0; padding:6px 10px;",
+                          "font-size:11px; color:#E0A94A; margin-bottom:8px;"),
+                        paste0("LOADED CARRY — put the load in the weight field and the TIME (sec) ",
+                               "or steps in the reps field (target ", we$rep_range_low, "–",
+                               we$rep_range_high, "s). Walk tall, ribs down; progress by adding time or load.")),
+
                   # ── Set logging grid ─────────────────────────────────
                   div(
                     # Column headers
