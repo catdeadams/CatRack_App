@@ -854,7 +854,13 @@ score_exercise <- function(exercise, slot, block_variant, used_ids,
   }
   prim_def <- sum(vapply(prim, safe_def, numeric(1)))
   sec_def  <- sum(vapply(sec,  safe_def, numeric(1))) * 0.5
-  muscle_score <- (prim_def + sec_def) / 5.0  # normalize roughly
+  # The deficit signal guides selection toward muscles that still owe weekly
+  # volume, but is CAPPED so a big multi-muscle deficit SUM can't dominate the
+  # equipment preference and variety terms. Uncapped, this reached 3-4 and made
+  # whichever exercise touched the most needy muscles win every time (push-ups
+  # over presses, Farmer's over every other carry). Now base(1.0) + block(0.6) +
+  # muscle_score(<=1.5) + variety penalties are all comparable.
+  muscle_score <- min(1.5, (prim_def + sec_def) / 10.0)
 
   # Block equipment preference. isTRUE() guards against `any(NA)` -> NA
   # crashing the `if`, which can happen if eq contains NA entries from
@@ -879,16 +885,27 @@ score_exercise <- function(exercise, slot, block_variant, used_ids,
     else if (grepl("pull-?up|chin-?up", nm)) baseline_score <- -1.5
   }
 
-  # Variety penalties: discourage repeating an exercise used in the prior
-  # block (so Blocks A/B/C actually rotate) or already used earlier this
-  # week (so the 2-3 sessions in a week don't all pick the same lift for a
-  # shared movement pattern). Soft — only flips near-ties, never overrides a
-  # clearly-best choice.
+  # Pattern-specific variety penalties.
+  #  • Across blocks: everything rotates (systematic variation drives regional
+  #    hypertrophy), main lifts a little more gently so a great squat can carry
+  #    over if it's clearly best.
+  #  • Within a week: MAIN lifts (the heavy lift + its back-off) should REPEAT
+  #    so you can progressively overload the same movement week to week; but
+  #    accessories and loaded carries rotate HARD for variety, and secondary
+  #    compounds rotate mildly.
+  # Loaded carries are accessories to rotate even though they use a compound
+  # slot, so classify them by movement pattern, not slot role.
+  is_carry_e <- isTRUE(exercise$movement_pattern == "locomotion")
+  is_main    <- isTRUE(slot$role == "heavy") || isTRUE(slot$reuse_heavy)
+  is_compnd  <- isTRUE(slot$role == "compound") && !is_carry_e
+  week_w  <- if (is_main) 0.0 else if (is_compnd) 0.4 else 2.0
+  block_w <- if (is_main) 0.5 else 0.7
+
   variety_pen <- 0
   if (length(prev_block_ids) > 0 && exercise$id %in% prev_block_ids)
-    variety_pen <- variety_pen + 0.7
+    variety_pen <- variety_pen + block_w
   if (length(week_used_ids) > 0 && exercise$id %in% week_used_ids)
-    variety_pen <- variety_pen + 0.4
+    variety_pen <- variety_pen + week_w
 
   base + muscle_score + block_score + baseline_score - variety_pen
 }
