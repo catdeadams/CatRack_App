@@ -555,17 +555,29 @@ catrack_runtime_js <- function() {
         // app never closes from an accidental swipe.
         if (!window._catrackBackGuard) {
           window._catrackBackGuard = true;
-          try { history.pushState({catrack: true}, ""); } catch (e) {}
-          window.addEventListener("popstate", function() {
-            // Re-arm immediately so there is always a state to pop.
-            try { history.pushState({catrack: true}, ""); } catch (e) {}
-            var page = localStorage.getItem("catrack_last_page") || "";
-            var sub = ["workout","preview","summary","progress",
-                       "profile","programs"];
-            if (sub.indexOf(page) !== -1 && window.Shiny && Shiny.setInputValue) {
+          // Keep a sentinel history entry to absorb the gesture. Re-arm it on
+          // every pop AND every time the app is shown, so a back/swipe can NEVER
+          // reach the entry that would exit the app — no matter which page or
+          // how fast you swipe.
+          var ctArm = function () {
+            try { history.pushState({ctBack: Date.now()}, ""); } catch (e) {}
+          };
+          ctArm();
+          window.addEventListener("popstate", function () {
+            ctArm();  // immediately re-assert so back can never leave the app
+            var page = "";
+            try { page = localStorage.getItem("catrack_last_page") || ""; } catch (e) {}
+            // Anything that is not the dashboard goes back to the program page
+            // (dashboard). Harmless no-op if we are already there.
+            if (page !== "dashboard" && page !== "login" && page !== "onboarding" &&
+                window.Shiny && Shiny.setInputValue) {
               Shiny.setInputValue("nav_tab", "dashboard", {priority: "event"});
             }
-            // On dashboard / login / onboarding: do nothing — stay in app.
+          });
+          // Re-arm after returning from background (a reload/gesture may have
+          // consumed the sentinel while the tab was hidden).
+          document.addEventListener("visibilitychange", function () {
+            if (document.visibilityState === "visible") ctArm();
           });
         }
 
