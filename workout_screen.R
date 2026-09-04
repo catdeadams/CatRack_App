@@ -1126,33 +1126,59 @@ swap_modal_ui <- function(we_id, exercise_id, suggestions) {
                 "No substitutes found with your equipment.")
           } else {
             tagList(
-              # Selectable exercise cards
-              lapply(seq_along(suggestions), function(i) {
-                s           <- suggestions[[i]]
-                muscles_str <- tryCatch(
-                  tools::toTitleCase(gsub("_", " ",
-                    paste(unlist(s$primary_muscles), collapse = ", "))),
-                  error = \(e) "")
-                match_label <- if (i == 1) "BEST MATCH" else if (i == 2) "ALTERNATIVE" else "OPTION"
-                label_color <- if (i == 1) "#1D9E75" else "#888"
-                div(
-                  class   = "swap-card",
-                  style   = paste0(
-                    "background:#1a1a1a; border:1px solid #242424;",
-                    "border-radius:12px; padding:14px 16px; margin-bottom:8px;",
-                    "cursor:pointer; transition:border 0.15s, background 0.15s;"),
-                  onclick = sprintf("swapSelectEx(this,'%s')", s$id),
-                  div(style = "display:flex; justify-content:space-between; align-items:center;",
-                      div(style = "font-size:14px; font-weight:600; color:#f0f0f0;", s$name),
-                      div(style = sprintf(
-                            "font-size:10px; color:%s; font-weight:700; letter-spacing:0.07em;",
-                            label_color),
-                          match_label)
-                  ),
-                  div(style = "font-size:11px; color:#555; margin-top:3px;",
-                      paste0(muscles_str,
-                             " · ", s$default_rep_range_low %||% 8,
-                             "–", s$default_rep_range_high %||% 12, " reps"))
+              # Selectable exercise cards, grouped into direct swaps (same
+              # movement) and same-muscle alternatives, each labelled with its
+              # equipment and, where clear, an easier/harder hint.
+              local({
+                card <- function(s, is_best) {
+                  muscles_str <- tryCatch(
+                    tools::toTitleCase(gsub("_", " ",
+                      paste(unlist(s$primary_muscles), collapse = ", "))),
+                    error = \(e) "")
+                  lvl <- s$level
+                  lvl_pill <- if (!is.null(lvl) && !is.na(lvl)) {
+                    lc <- if (identical(lvl, "easier")) "#5DA9FF" else "#E0A94A"
+                    span(style = sprintf(paste0("font-size:9px;font-weight:700;color:%s;",
+                                 "border:1px solid %s;border-radius:4px;padding:1px 5px;margin-left:6px;"),
+                                 lc, lc),
+                         toupper(lvl))
+                  } else NULL
+                  best_pill <- if (isTRUE(is_best))
+                    div(style = "font-size:10px;color:#1D9E75;font-weight:700;letter-spacing:0.07em;",
+                        "BEST MATCH") else NULL
+                  cur_note <- if (isTRUE(s$is_curated))
+                    span(style = "color:#5DCAA5;", " · recommended") else NULL
+                  div(
+                    class   = "swap-card",
+                    style   = paste0(
+                      "background:#1a1a1a; border:1px solid #242424;",
+                      "border-radius:12px; padding:13px 15px; margin-bottom:8px;",
+                      "cursor:pointer; transition:border 0.15s, background 0.15s;"),
+                    onclick = sprintf("swapSelectEx(this,'%s')", s$id),
+                    div(style = "display:flex; justify-content:space-between; align-items:center;",
+                        div(style = "font-size:14px; font-weight:600; color:#f0f0f0;",
+                            s$name, lvl_pill),
+                        best_pill),
+                    div(style = "font-size:11px; color:#666; margin-top:3px;",
+                        paste0(s$equipment_label %||% "", " · ", muscles_str,
+                               " · ", s$rep_low %||% 8, "–", s$rep_high %||% 12, " reps"),
+                        cur_note)
+                  )
+                }
+                direct <- Filter(function(s) identical(s$group, "direct"),    suggestions)
+                alt    <- Filter(function(s) identical(s$group, "alternate"), suggestions)
+                section <- function(title, items, best_first) {
+                  if (length(items) == 0) return(NULL)
+                  tagList(
+                    div(style = "font-size:10px;color:#555;text-transform:uppercase;
+                                 letter-spacing:0.08em;margin:2px 0 8px;", title),
+                    lapply(seq_along(items),
+                           function(k) card(items[[k]], best_first && k == 1))
+                  )
+                }
+                tagList(
+                  section("Direct swaps — same movement",   direct, TRUE),
+                  section("Other options — same muscles",    alt,    length(direct) == 0)
                 )
               }),
 
@@ -1766,25 +1792,20 @@ setup_workout_server <- function(input, output, session, rv) {
     rv$swap_ex_id       <- parts[2]
     rv$swap_suggestions <- NULL
 
-    we_row <- if (!is.null(rv$active_exercises))
-      rv$active_exercises[rv$active_exercises$id == rv$swap_we_id, ] else NULL
-
     tryCatch({
-      current_ex <- sb_select("exercises",
-                              sprintf("?id=eq.%s", rv$swap_ex_id), token = rv$token)
-      if (!is.null(current_ex)) {
-        muscles    <- paste(current_ex$primary_muscles[[1]], collapse = ", ")
-        user_equip <- rv$profile$equipment_available[[1]] %||%
-          c("dumbbells", "bench", "cable_machine", "pullup_bar", "bodyweight")
-        suggestions <- get_swap_suggestions(
-          exercise_name   = current_ex$name,
-          primary_muscles = muscles,
-          user_equipment  = user_equip,
-          user_token      = rv$token,
-          exclude_ex_id   = rv$swap_ex_id
-        )
-        rv$swap_suggestions <- suggestions
-      }
+      user_equip <- rv$profile$equipment_available[[1]] %||%
+        c("dumbbells", "bench", "cable_machine", "pullup_bar", "bodyweight")
+      # Exclude every exercise already in today's session so a swap never
+      # duplicates something you're already doing.
+      exclude_ids <- tryCatch(
+        setdiff(unique(as.character(rv$active_exercises$exercise_id)), rv$swap_ex_id),
+        error = \(e) character(0))
+      rv$swap_suggestions <- get_swap_suggestions(
+        current_ex_id  = rv$swap_ex_id,
+        user_equipment = user_equip,
+        user_token     = rv$token,
+        exclude_ids    = exclude_ids
+      )
     }, error = function(e) {
       message("Swap suggestion error: ", e$message)
       rv$swap_suggestions <- list()
@@ -1813,10 +1834,38 @@ setup_workout_server <- function(input, output, session, rv) {
     is_back_to_original <- !is.null(orig_swap) && nrow(orig_swap) > 0 &&
       orig_swap$original_exercise_id[1] == new_ex_id
 
-    sb_update("workout_exercises",
-              sprintf("?id=eq.%s", we_id),
-              list(exercise_id = new_ex_id, is_swapped = !is_back_to_original),
-              token = rv$token)
+    # Keep tracking sensible when the swap crosses exercise "types": a carry
+    # logs time/steps, an isometric hold logs seconds, everything else logs
+    # reps. Adjust set_type (and the rep field for time-based work) to match the
+    # NEW exercise; preserve the slot's rep prescription for ordinary swaps, and
+    # keep a drop-set designation if both old and new are ordinary lifts.
+    patch <- list(exercise_id = new_ex_id, is_swapped = !is_back_to_original)
+    orig_st <- tryCatch(as.character(
+      rv$active_exercises$set_type[rv$active_exercises$id == we_id][1]), error = \(e) "working")
+    nx <- tryCatch(sb_select("exercises",
+      sprintf(paste0("?id=eq.%s&select=name,category,movement_pattern,",
+                     "default_rep_range_low,default_rep_range_high"), new_ex_id),
+      token = rv$token), error = \(e) NULL)
+    if (!is.null(nx) && nrow(nx) > 0) {
+      nm  <- tolower(as.character(nx$name[1] %||% ""))
+      cat_ <- tolower(as.character(nx$category[1] %||% ""))
+      pat  <- tolower(as.character(nx$movement_pattern[1] %||% ""))
+      if (grepl("carry", nm) || pat == "locomotion") {
+        patch$set_type <- "carry"; patch$rep_range_low <- 20L; patch$rep_range_high <- 40L
+      } else if (cat_ == "isometric") {
+        patch$set_type <- "isometric"
+        patch$rep_range_low  <- as.integer(nx$default_rep_range_low[1]  %||% 20L)
+        patch$rep_range_high <- as.integer(nx$default_rep_range_high[1] %||% 45L)
+      } else if (cat_ == "plyometric") {
+        patch$set_type <- "plyometric"
+      } else if (orig_st %in% c("carry", "isometric", "plyometric", "timed")) {
+        # Swapping a time/power slot back to an ordinary lift → log reps again.
+        patch$set_type <- "working"
+        patch$rep_range_low  <- as.integer(nx$default_rep_range_low[1]  %||% 8L)
+        patch$rep_range_high <- as.integer(nx$default_rep_range_high[1] %||% 12L)
+      }
+    }
+    sb_update("workout_exercises", sprintf("?id=eq.%s", we_id), patch, token = rv$token)
 
     sb_insert("exercise_swaps",
               list(user_id = rv$user_id, workout_exercise_id = we_id,
@@ -1858,94 +1907,114 @@ setup_workout_server <- function(input, output, session, rv) {
 }
 
 # ── SWAP SUGGESTIONS ─────────────────────────────────────────
-# Returns up to 3 exercise substitutes that target the same muscles
-# as the exercise being swapped, filtered by the user's equipment.
+# Given the exercise you're swapping, return the best equipment-eligible
+# substitutes from the WHOLE library, ranked and tagged so the modal can group
+# them and describe each honestly. Two ideas drive the ranking:
+#   • DIRECT swaps  = same movement_pattern (a row for a row, a squat for a
+#     squat) — the truest like-for-like replacements, kept at the top.
+#   • ALTERNATES    = a different pattern that still hits the same primary
+#     muscle(s) (e.g. a fly or dip for a press) — variety / different angle.
+# Curated substitution_1/2 are boosted. Anything already in today's session is
+# excluded so you never get a duplicate. Each item carries an equipment label
+# and, only where it's unambiguous, an "easier"/"harder" hint.
 #
-# Strategy (in priority order):
-#  1. Use the curated substitution_1 / substitution_2 fields on the exercise
-#     record — these are hand-picked same-muscle-group alternatives
-#  2. Fall back to scoring all equipment-eligible exercises by primary_muscles
-#     overlap with the original exercise
-get_swap_suggestions <- function(exercise_name, primary_muscles,
-                                 user_equipment, user_token, exclude_ex_id) {
+# Returns a flat list (ranked) of items:
+#   id, name, primary_muscles(chr), equipment_label, rep_low, rep_high,
+#   group ("direct"|"alternate"), level ("easier"|"harder"|NA), is_curated
+get_swap_suggestions <- function(current_ex_id, user_equipment, user_token,
+                                 exclude_ids = character(0), max_n = 8L) {
 
   parse_arr <- function(val) {
     if (is.list(val))      return(tolower(trimws(unlist(val))))
     if (is.character(val)) return(tolower(trimws(strsplit(gsub('[{}\\[\\]"]', '', val[1]), ",")[[1]])))
     character(0)
   }
-
-  has_equipment <- function(req_val) {
-    req <- parse_arr(req_val)
-    req <- req[nchar(req) > 0]
+  has_equipment <- function(eq) {
+    req <- eq[nchar(eq) > 0]
     if (length(req) == 0) return(TRUE)
     all(req %in% c(tolower(user_equipment), "bodyweight"))
   }
-
-  results   <- list()
-  found_ids <- character(0)
-
-  # ── Step 1: curated substitutions ────────────────────────────
-  cur <- sb_select("exercises",
-    sprintf("?id=eq.%s&select=substitution_1,substitution_2", exclude_ex_id),
-    token = user_token)
-
-  sub_names <- character(0)
-  if (!is.null(cur) && nrow(cur) > 0) {
-    s1 <- tryCatch(as.character(cur$substitution_1[1]), error = \(e) NA_character_)
-    s2 <- tryCatch(as.character(cur$substitution_2[1]), error = \(e) NA_character_)
-    sub_names <- na.omit(c(s1, s2))
-    sub_names <- sub_names[nchar(trimws(sub_names)) > 0]
+  equip_label <- function(eq) {
+    eq <- eq[nchar(eq) > 0]
+    if (length(eq) == 0 || all(eq == "bodyweight"))            return("Bodyweight")
+    if (any(grepl("machine|pulldown|leg_press|pec_dec|hack|pendulum|belt_squat|smith", eq)))
+      return("Machine")
+    if ("cable_machine" %in% eq)                               return("Cable")
+    if ("kettlebell" %in% eq)                                  return("Kettlebell")
+    if (any(c("barbell", "trap_bar", "ez_bar", "t_bar_row") %in% eq)) return("Barbell")
+    if ("dumbbells" %in% eq)                                   return("Dumbbell")
+    if ("resistance_bands" %in% eq)                            return("Band")
+    tools::toTitleCase(gsub("_", " ", eq[1]))
+  }
+  # Only label difficulty when the name makes it unambiguous — never guess.
+  swap_level <- function(nm) {
+    cn <- tolower(nm)
+    if (grepl("assisted|band", cn)) return("easier")
+    if (grepl("eccentric|nordic|pistol|deficit|weighted|single-leg|single leg|single-arm|single arm|deep|sissy|reverse nordic|copenhagen|depth", cn))
+      return("harder")
+    NA_character_
   }
 
-  for (nm in sub_names) {
-    match <- sb_select("exercises",
-      sprintf(paste0("?name=ilike.%s",
-                     "&select=id,name,category,primary_muscles,equipment_required,",
-                     "default_rep_range_low,default_rep_range_high&limit=1"),
-              URLencode(nm, reserved = TRUE)),
-      token = user_token)
-    if (is.null(match) || nrow(match) == 0) next
-    if (!has_equipment(match$equipment_required[[1]])) next
-    results   <- c(results, list(as.list(match[1, ])))
-    found_ids <- c(found_ids, match$id[1])
-    if (length(results) >= 3) return(results)
-  }
+  # ── Current exercise ──
+  cur <- sb_select("exercises", sprintf("?id=eq.%s&select=*", current_ex_id),
+                   token = user_token)
+  if (is.null(cur) || nrow(cur) == 0) return(list())
+  cur_pat  <- tolower(as.character(cur$movement_pattern[1] %||% ""))
+  cur_cat  <- tolower(as.character(cur$category[1] %||% ""))
+  cur_prim <- parse_arr(cur$primary_muscles[[1]])
+  cur_sec  <- parse_arr(cur$secondary_muscles[[1]])
+  cur_lvl  <- swap_level(as.character(cur$name[1] %||% ""))
+  subs     <- tolower(trimws(na.omit(c(
+                tryCatch(cur$substitution_1[1], error = \(e) NA),
+                tryCatch(cur$substitution_2[1], error = \(e) NA)))))
+  subs     <- subs[nchar(subs) > 0]
 
-  # ── Step 2: muscle-overlap scoring ───────────────────────────
-  target_muscles <- tolower(trimws(strsplit(primary_muscles, ",\\s*")[[1]]))
-  target_muscles <- target_muscles[nchar(target_muscles) > 0]
-
+  # ── Whole library, one fetch ──
   pool <- sb_select("exercises",
-    sprintf(paste0("?id=neq.%s",
-                   "&select=id,name,category,primary_muscles,equipment_required,",
-                   "default_rep_range_low,default_rep_range_high"),
-            exclude_ex_id),
+    paste0("?select=id,name,category,movement_pattern,primary_muscles,",
+           "secondary_muscles,equipment_required,default_rep_range_low,",
+           "default_rep_range_high"),
     token = user_token)
+  if (is.null(pool) || nrow(pool) == 0) return(list())
 
-  if (is.null(pool) || nrow(pool) == 0) return(results)
+  excl <- unique(c(current_ex_id, exclude_ids))
+  out  <- list()
+  for (i in seq_len(nrow(pool))) {
+    id <- pool$id[i]
+    if (id %in% excl) next
+    eq <- parse_arr(pool$equipment_required[[i]])
+    if (!has_equipment(eq)) next
 
-  pool <- pool[!pool$id %in% found_ids, ]
-  ok   <- vapply(seq_len(nrow(pool)), function(i)
-    has_equipment(pool$equipment_required[[i]]), logical(1))
-  pool <- pool[ok, , drop = FALSE]
-  if (nrow(pool) == 0) return(results)
+    pat  <- tolower(as.character(pool$movement_pattern[i] %||% ""))
+    cat_ <- tolower(as.character(pool$category[i] %||% ""))
+    prim <- parse_arr(pool$primary_muscles[[i]])
+    sec  <- parse_arr(pool$secondary_muscles[[i]])
+    nm   <- as.character(pool$name[i])
 
-  scores <- vapply(seq_len(nrow(pool)), function(i) {
-    m <- parse_arr(pool$primary_muscles[[i]])
-    m <- m[nchar(m) > 0]
-    length(intersect(m, target_muscles))
-  }, integer(1))
+    same_pat <- nchar(pat) > 0 && pat == cur_pat
+    prim_ov  <- length(intersect(prim, cur_prim))
+    sec_ov   <- length(intersect(sec,  cur_sec))
 
-  matched <- pool[scores > 0, , drop = FALSE]
-  mscores <- scores[scores > 0]
-  if (nrow(matched) > 0) {
-    matched <- matched[order(-mscores), , drop = FALSE]
-    need    <- max(0L, 3L - length(results))
-    results <- c(results,
-      lapply(seq_len(min(need, nrow(matched))),
-             function(i) as.list(matched[i, ])))
+    # Must be a plausible substitute: same movement, or shares a primary muscle.
+    if (!same_pat && prim_ov == 0) next
+
+    score <- prim_ov * 20 + sec_ov * 5
+    if (same_pat)             score <- score + 100
+    if (cat_ == cur_cat)      score <- score + 30
+    if (tolower(nm) %in% subs) score <- score + 60          # curated pick
+
+    out[[length(out) + 1L]] <- list(
+      id = id, name = nm,
+      primary_muscles = prim,
+      equipment_label = equip_label(eq),
+      rep_low  = pool$default_rep_range_low[i]  %||% 8L,
+      rep_high = pool$default_rep_range_high[i] %||% 12L,
+      group    = if (same_pat) "direct" else "alternate",
+      level    = swap_level(nm),
+      is_curated = tolower(nm) %in% subs,
+      score = score)
   }
-
-  results
+  if (length(out) == 0) return(list())
+  out <- out[order(-vapply(out, \(x) x$score, numeric(1)))]
+  head(out, max_n)
 }
