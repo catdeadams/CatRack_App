@@ -2293,7 +2293,7 @@
       "checksum": "9e5f8ba02728944c0706f4e2ffc18dd4"
     },
     "ui.R": {
-      "checksum": "c586d316bb2316c43c9c0ae91f85e945"
+      "checksum": "13fe1334fd3be188492a38b2ca8a9b79"
     },
     "workout_screen.R": {
       "checksum": "43133db20d6fb27f98b9655b4adfe816"
@@ -2314,7 +2314,7 @@
       "checksum": "6f29928c75e5c2f2b5f0dd44417ae2dc"
     },
     "www/sw.js": {
-      "checksum": "e27ca1d8fea54879ea1cfaa21ccad31a"
+      "checksum": "7bf858c8e874fa0d53ea8d1255134a9a"
     }
   },
   "users": null

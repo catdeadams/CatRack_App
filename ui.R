@@ -152,10 +152,31 @@ ui <- page_fluid(
     tags$link(rel = "icon", type = "image/svg+xml", href = "icons/icon.svg"),
 
     tags$script(HTML("
-      // ── Service worker ──────────────────────────────────────
+      // ── Service worker + auto-update ─────────────────────────
+      // An installed PWA keeps the loaded page (its JS) in memory, so a plain
+      // deploy never reaches it until a full relaunch. To fix that: check for a
+      // new service worker whenever the app regains focus (and hourly), and
+      // reload ONCE when a new worker takes control — so client-side fixes
+      // actually land on the phone. Kiosk auto-login + workout restore make the
+      // reload seamless (you come back to the same screen).
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', function() {
-          navigator.serviceWorker.register('sw.js').catch(function() {});
+          var hadController = !!navigator.serviceWorker.controller;
+          navigator.serviceWorker.register('sw.js').then(function(reg) {
+            document.addEventListener('visibilitychange', function() {
+              if (document.visibilityState === 'visible') { try { reg.update(); } catch (e) {} }
+            });
+            setInterval(function() { try { reg.update(); } catch (e) {} }, 3600000);
+          }).catch(function() {});
+          // Only reload on an UPDATE (a controller already existed), never on
+          // the very first install.
+          if (hadController) {
+            navigator.serviceWorker.addEventListener('controllerchange', function() {
+              if (window._ctSwReloaded) return;
+              window._ctSwReloaded = true;
+              location.reload();
+            });
+          }
         });
       }
 

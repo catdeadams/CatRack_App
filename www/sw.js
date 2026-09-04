@@ -9,7 +9,7 @@
 // offline mid-session still degrades — but the SHELL won't blank out
 // and the user sees a clear banner.
 
-const CACHE = 'catrack-v4';
+const CACHE = 'catrack-v5';
 
 // No static PRECACHE list: under Posit Connect the app is served from a
 // content-scoped path (not '/'), so absolute paths like '/www/...' 404 and
