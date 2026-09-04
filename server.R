@@ -197,10 +197,16 @@ server <- function(input, output, session) {
       rv$token_acquired <- Sys.time()
       rv$user_id        <- tryCatch(result$body$user$id,    error = \(e) NULL)
       rv$user_email     <- tryCatch(result$body$user$email, error = \(e) NULL)
-      if (!is.null(rv$user_id))
+      if (!is.null(rv$user_id)) {
         tryCatch(load_user_data(), error = \(e) { rv$page <- "login" })
-      else
+        # If the client already sent its last view (e.g. an in-progress workout)
+        # before this auto-login ran, route to it now so a reload lands back in
+        # the workout rather than the dashboard.
+        v <- tryCatch(pending_last_view(), error = \(e) NULL)
+        if (!is.null(v)) { route_to_last_view(v); pending_last_view(NULL) }
+      } else {
         rv$page <- "login"
+      }
     } else {
       rv$page       <- "login"
       rv$auth_error <- "Auto-login unavailable — enter your credentials to continue."

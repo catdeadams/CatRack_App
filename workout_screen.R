@@ -1654,22 +1654,45 @@ setup_workout_server <- function(input, output, session, rv) {
       return()
     }
 
-    # Prefer the client-supplied elapsed time (driven by localStorage
-    # and therefore survives websocket reconnects). Fall back to the
-    # server-side start timestamp if the JS push didn't fire — e.g.
-    # the user finished the session within seconds of opening it.
+    completed_at_str <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ")
+
+    # Robust duration: measure from the FIRST set actually logged in this
+    # workout to completion, straight from the DB. This survives any number of
+    # disconnects / reloads / restarts — the old client localStorage timer reset
+    # to ~0 after a reconnect or re-open, so a 30-minute workout was recorded as
+    # ~1 minute. Fall back to the client elapsed / server start only if there is
+    # no logged set to anchor to (shouldn't happen — finish requires >=1 set).
     duration_mins <- tryCatch({
-      secs <- suppressWarnings(as.integer(input$session_elapsed_secs %||% NA_integer_))
-      if (!is.na(secs) && secs > 0) {
-        as.integer(round(secs / 60))
-      } else if (!is.null(rv$session_start_time)) {
-        as.integer(as.numeric(Sys.time() - rv$session_start_time, units = "mins"))
+      we_ids <- tryCatch(unique(as.character(rv$active_exercises$id)), error = \(e) character(0))
+      first_log <- NULL
+      if (length(we_ids) > 0) {
+        fl <- sb_select("workout_set_logs",
+          sprintf(paste0("?user_id=eq.%s&workout_exercise_id=in.(%s)",
+                         "&select=logged_at&order=logged_at.asc&limit=1"),
+                  rv$user_id, paste(we_ids, collapse = ",")),
+          token = rv$token)
+        if (!is.null(fl) && nrow(fl) > 0) first_log <- as.character(fl$logged_at[1])
+      }
+      if (!is.null(first_log)) {
+        m <- as.numeric(difftime(as.POSIXct(completed_at_str, tz = "UTC"),
+                                 as.POSIXct(first_log,        tz = "UTC"), units = "mins"))
+        if (is.finite(m) && m >= 0) as.integer(round(m)) else NA_integer_
       } else NA_integer_
     }, error = \(e) NA_integer_)
 
-    completed_at_str <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ")
+    if (is.na(duration_mins)) {
+      duration_mins <- tryCatch({
+        secs <- suppressWarnings(as.integer(input$session_elapsed_secs %||% NA_integer_))
+        if (!is.na(secs) && secs > 0) as.integer(round(secs / 60))
+        else if (!is.null(rv$session_start_time))
+          as.integer(as.numeric(Sys.time() - rv$session_start_time, units = "mins"))
+        else NA_integer_
+      }, error = \(e) NA_integer_)
+    }
+
     update_data <- list(completed_at = completed_at_str)
-    if (!is.na(duration_mins)) update_data$duration_minutes <- duration_mins
+    if (!is.na(duration_mins) && duration_mins >= 0)
+      update_data$duration_minutes <- duration_mins
 
     resp <- sb_update("workouts",
                       sprintf("?id=eq.%s", rv$active_workout_id),

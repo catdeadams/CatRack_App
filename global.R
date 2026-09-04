@@ -462,6 +462,7 @@ catrack_runtime_js <- function() {
             document.head.appendChild(_st);
           }
           var _catrackReconnectTimer = null;
+          var _catrackDisconnected   = false;
           function catrackShowReconnect() {
             var ov = document.getElementById("catrack-reconnect-overlay");
             if (!ov) {
@@ -495,18 +496,52 @@ catrack_runtime_js <- function() {
             var ov = document.getElementById("catrack-reconnect-overlay");
             if (ov) ov.style.display = "none";
           }
+          // Remove notifications Shiny re-flushes from its buffer when it
+          // resumes the SAME session on reconnect — otherwise every popup from
+          // before the drop (swaps, PRs, saves) reappears at once "as if new".
+          function catrackClearNotifications() {
+            var np = document.getElementById("shiny-notification-panel");
+            if (np) np.innerHTML = "";
+          }
           document.addEventListener("shiny:disconnected", function() {
+            _catrackDisconnected = true;
             showBanner("⟳  Reconnecting…");
             catrackShowReconnect();
             if (_catrackReconnectTimer) clearTimeout(_catrackReconnectTimer);
-            _catrackReconnectTimer = setTimeout(function(){ location.reload(); }, 6000);
+            // Short grace for a transient blip to self-recover, then reload. A
+            // clean reload + kiosk auto-login returns you to the workout with
+            // your logged sets, and (being a fresh page) shows no stale popups.
+            _catrackReconnectTimer = setTimeout(function(){ location.reload(); }, 3500);
           });
           document.addEventListener("shiny:connected", function() {
             if (_catrackReconnectTimer) {
               clearTimeout(_catrackReconnectTimer); _catrackReconnectTimer = null;
             }
+            // On a genuine reconnect (not the first connect) drop replayed popups.
+            if (_catrackDisconnected) setTimeout(catrackClearNotifications, 300);
+            _catrackDisconnected = false;
             catrackHideReconnect();
             hideBanner();
+          });
+          // Returning to the app after it was backgrounded (screen lock / app
+          // switch): the OS pauses timers, so the keep-alive heartbeat stops and
+          // Posit drops the idle socket. On return, ping immediately; and if the
+          // socket already died, recover right away instead of leaving a frozen
+          // screen the user has to fight with.
+          document.addEventListener("visibilitychange", function() {
+            if (document.visibilityState !== "visible") return;
+            try {
+              if (window.Shiny && Shiny.setInputValue)
+                Shiny.setInputValue("client_heartbeat", Date.now(), {priority:"event"});
+            } catch (e) {}
+            // Recover immediately if the socket died while backgrounded, rather
+            // than waiting out the disconnect grace timer.
+            var dead = _catrackDisconnected;
+            try {
+              var s = window.Shiny && Shiny.shinyapp && Shiny.shinyapp.$socket;
+              if (s && typeof s.readyState === "number" && s.readyState > 1) dead = true;
+            } catch (e) {}
+            if (dead) { catrackShowReconnect(); location.reload(); }
           });
           if (!navigator.onLine) showBanner();
         }
