@@ -136,7 +136,22 @@ sb_upsert <- function(table, data, token = NULL) {
     req_perform()
 }
 
+# A write filter must scope to specific rows. An empty / collapsed filter on a
+# PATCH or DELETE rewrites or wipes EVERY row in the table — this is exactly how
+# the 2026-09-17 "every exercise became DB Fly" corruption happened. Require the
+# filter to be a single "?...=<op>.<value>" string with a non-empty value.
+.sb_filter_ok <- function(fp) {
+  length(fp) == 1 && !is.na(fp) && is.character(fp) &&
+    startsWith(fp, "?") && nchar(fp) >= 5 &&
+    grepl("=(eq|in|gte|lte|gt|lt|neq|like|ilike|is)\\.[^&]", fp)
+}
+
 sb_update <- function(table, filter_params, data, token = NULL) {
+  if (!.sb_filter_ok(filter_params)) {
+    warning(sprintf("sb_update REFUSED unscoped filter on '%s': '%s'",
+                    table, paste(filter_params, collapse = "")))
+    return(list(status_code = 400L, refused = TRUE))
+  }
   .sb_req(paste0(table, filter_params), token) |>
     req_headers("Prefer" = "return=representation") |>
     req_body_raw(toJSON(data, auto_unbox = TRUE, na = "null")) |>
@@ -145,6 +160,11 @@ sb_update <- function(table, filter_params, data, token = NULL) {
 }
 
 sb_delete <- function(table, filter_params, token = NULL) {
+  if (!.sb_filter_ok(filter_params)) {
+    warning(sprintf("sb_delete REFUSED unscoped filter on '%s': '%s'",
+                    table, paste(filter_params, collapse = "")))
+    return(list(status_code = 400L, refused = TRUE))
+  }
   .sb_req(paste0(table, filter_params), token) |>
     req_method("DELETE") |>
     req_perform()

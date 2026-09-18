@@ -55,6 +55,16 @@ sb_get <- function(table, params = "") {
 }
 
 sb_patch <- function(table, params, data) {
+  # SAFETY: refuse an unscoped PATCH. An empty/collapsed filter here would
+  # rewrite every row in the table (root cause of the 2026-09-17 DB Fly
+  # corruption). The filter must be "?...=<op>.<value>" with a real value.
+  if (length(params) != 1 || is.na(params) || !is.character(params) ||
+      !startsWith(params, "?") || nchar(params) < 5 ||
+      !grepl("=(eq|in|gte|lte|gt|lt|neq|like|ilike|is)\\.[^&]", params)) {
+    warning(sprintf("sb_patch REFUSED unscoped filter on '%s': '%s'",
+                    table, paste(params, collapse = "")))
+    return(list(status_code = 400L, refused = TRUE))
+  }
   request(paste0(SUPABASE_URL, "/rest/v1/", table, params)) |>
     req_headers(
       "apikey"        = SUPABASE_SERVICE_KEY,
@@ -1683,6 +1693,27 @@ preview_program <- function(program_id, week = 1) {
 # ============================================================
 regenerate_from_week <- function(program_id, user_id, from_week,
                                  swapped_exercise_id, replacement_exercise_id) {
+  .is_uuid <- function(x) is.character(x) && length(x) == 1 && !is.na(x) &&
+    grepl("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$", x)
+
+  # SAFETY: bail out unless every id is a real UUID and from_week is a sane
+  # week. Without this, a NULL/NA id during a reconnect could widen the scope
+  # of the block-swap PATCH loop (the 2026-09-17 corruption).
+  if (!.is_uuid(program_id) || !.is_uuid(swapped_exercise_id) ||
+      !.is_uuid(replacement_exercise_id)) {
+    cat("regenerate_from_week: invalid id(s), aborting (no changes made).\n")
+    return(invisible(NULL))
+  }
+  from_week <- suppressWarnings(as.integer(from_week))
+  if (is.na(from_week) || from_week < 1L || from_week > 12L) {
+    cat("regenerate_from_week: bad from_week, aborting (no changes made).\n")
+    return(invisible(NULL))
+  }
+  if (identical(swapped_exercise_id, replacement_exercise_id)) {
+    cat("regenerate_from_week: swap == replacement, nothing to do.\n")
+    return(invisible(NULL))
+  }
+
   future_wkts <- sb_get("workouts",
     sprintf("?program_id=eq.%s&week_number=gte.%d&select=id",
             program_id, from_week))
@@ -1696,9 +1727,21 @@ regenerate_from_week <- function(program_id, user_id, from_week,
   if (is.null(future_we) || nrow(future_we) == 0) {
     cat("No future instances of this exercise.\n"); return(invisible(NULL))
   }
-  for (we_id in future_we$id)
-    sb_patch("workout_exercises", sprintf("?id=eq.%s", we_id),
-             list(exercise_id = replacement_exercise_id, is_swapped = TRUE))
-  cat(sprintf("Updated %d future sessions.\n", nrow(future_we)))
-  invisible(nrow(future_we))
+  # SAFETY: one exercise across a 12-week block is a couple dozen rows at most.
+  # A count this large means a filter collapsed — refuse rather than corrupt.
+  if (nrow(future_we) > 60L) {
+    cat(sprintf("regenerate_from_week: refusing to patch %d rows (sanity cap); ",
+                nrow(future_we)))
+    cat("scope looks wrong, aborting (no changes made).\n")
+    return(invisible(NULL))
+  }
+  patched <- 0L
+  for (we_id in future_we$id) {
+    if (!.is_uuid(we_id)) next
+    r <- sb_patch("workout_exercises", sprintf("?id=eq.%s", we_id),
+                  list(exercise_id = replacement_exercise_id, is_swapped = TRUE))
+    if (isTRUE(r$status_code %in% c(200L, 204L))) patched <- patched + 1L
+  }
+  cat(sprintf("Updated %d future sessions.\n", patched))
+  invisible(patched)
 }

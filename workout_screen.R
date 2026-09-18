@@ -1848,6 +1848,16 @@ setup_workout_server <- function(input, output, session, rv) {
     new_ex_id <- parts[2]
     scope     <- parts[3]
 
+    # SAFETY: only act on a swap the user actually opened in this session. A
+    # reconnect can replay a buffered confirm_swap after the modal state was
+    # cleared; without this guard a stale/duplicated event could re-fire the
+    # block-swap regeneration. Require real UUIDs and a known scope too.
+    .is_uuid <- function(x) is.character(x) && length(x) == 1 && !is.na(x) &&
+      grepl("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$", x)
+    if (is.null(rv$swap_we_id) || !identical(we_id, rv$swap_we_id)) return()
+    if (!.is_uuid(we_id) || !.is_uuid(new_ex_id)) return()
+    if (!scope %in% c("session", "block")) return()
+
     # Detect if swapping back to original exercise; if so, clear the SUBST badge
     orig_swap <- tryCatch(
       sb_select("exercise_swaps",
