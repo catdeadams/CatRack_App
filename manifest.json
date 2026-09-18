@@ -2272,7 +2272,7 @@
       "checksum": "928b51825f7808b72569947687d6e53e"
     },
     "global.R": {
-      "checksum": "a7fb86c20c288b24396e24ba5eb4f9b4"
+      "checksum": "bf7c8986c299041512c0b1ecd118cff4"
     },
     "methodology.R": {
       "checksum": "374d278ef54a52f92119d2f39e5c0a4b"
@@ -2290,7 +2290,7 @@
       "checksum": "baa655a1f1e94318ac2f5ee87ef64e39"
     },
     "server.R": {
-      "checksum": "9e5f8ba02728944c0706f4e2ffc18dd4"
+      "checksum": "e05bf4e932c9e508c1853c16590ee49c"
     },
     "ui.R": {
       "checksum": "13fe1334fd3be188492a38b2ca8a9b79"
@@ -2314,7 +2314,7 @@
       "checksum": "6f29928c75e5c2f2b5f0dd44417ae2dc"
     },
     "www/sw.js": {
-      "checksum": "7bf858c8e874fa0d53ea8d1255134a9a"
+      "checksum": "d740e4b5750a39f91d1b146c21211371"
     }
   },
   "users": null

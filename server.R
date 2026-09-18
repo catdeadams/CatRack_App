@@ -183,38 +183,72 @@ server <- function(input, output, session) {
   # to the manual login form if the creds are missing or rejected, so the app
   # never bricks. The localStorage session-restore path still works: since
   # rv$token is set here first, restore_session_refresh no-ops.
-  kiosk_login <- function() {
-    if (!is.null(rv$token)) return()
-    if (nchar(CATRACK_EMAIL) == 0 || nchar(CATRACK_PASSWORD) == 0) {
-      rv$page <- "login"; return()
-    }
-    result    <- tryCatch(sb_login(CATRACK_EMAIL, CATRACK_PASSWORD), error = \(e) NULL)
+  # Shared post-auth routine: given Supabase credentials, sign in, wire up the
+  # session, persist the refresh token + username for next time, load the user's
+  # data, and route. Returns TRUE on success. RLS applies (a real user JWT).
+  login_with_creds <- function(email, password, username = NULL) {
+    result    <- tryCatch(sb_login(email, password), error = \(e) NULL)
     token_val <- tryCatch(result$body$access_token, error = \(e) NULL)
-    if (!is.null(result) && isTRUE(result$status %in% c(200, 201)) &&
-        !is.null(token_val) && nchar(token_val) > 0) {
-      rv$token          <- token_val
-      rv$refresh_token  <- tryCatch(result$body$refresh_token, error = \(e) NULL)
-      rv$token_acquired <- Sys.time()
-      rv$user_id        <- tryCatch(result$body$user$id,    error = \(e) NULL)
-      rv$user_email     <- tryCatch(result$body$user$email, error = \(e) NULL)
-      if (!is.null(rv$user_id)) {
-        tryCatch(load_user_data(), error = \(e) { rv$page <- "login" })
-        # If the client already sent its last view (e.g. an in-progress workout)
-        # before this auto-login ran, route to it now so a reload lands back in
-        # the workout rather than the dashboard.
-        v <- tryCatch(pending_last_view(), error = \(e) NULL)
-        if (!is.null(v)) { route_to_last_view(v); pending_last_view(NULL) }
-      } else {
-        rv$page <- "login"
-      }
-    } else {
-      rv$page       <- "login"
-      rv$auth_error <- "Auto-login unavailable — enter your credentials to continue."
-    }
+    if (is.null(result) || !isTRUE(result$status %in% c(200, 201)) ||
+        is.null(token_val) || nchar(token_val) == 0) return(FALSE)
+    rv$token          <- token_val
+    rv$refresh_token  <- tryCatch(result$body$refresh_token, error = \(e) NULL)
+    rv$token_acquired <- Sys.time()
+    rv$user_id        <- tryCatch(result$body$user$id,    error = \(e) NULL)
+    rv$user_email     <- tryCatch(result$body$user$email, error = \(e) NULL)
+    if (is.null(rv$user_id)) { rv$token <- NULL; return(FALSE) }
+    if (!is.null(rv$refresh_token) && nchar(rv$refresh_token) > 0)
+      session$sendCustomMessage("save_auth_session",
+        list(refresh_token = rv$refresh_token, email = rv$user_email %||% ""))
+    if (!is.null(username) && nchar(username) > 0)
+      session$sendCustomMessage("ct_store_username", list(username = username))
+    tryCatch(load_user_data(), error = \(e) { rv$page <- "login" })
+    # If the client already reported its last view (e.g. an in-progress workout)
+    # before auth completed, route there so a reload lands back in the workout.
+    v <- tryCatch(pending_last_view(), error = \(e) NULL)
+    if (!is.null(v)) { route_to_last_view(v); pending_last_view(NULL) }
+    TRUE
   }
-  # Run once at startup, inside a reactive context — rv is a reactiveValues and
-  # cannot be read/written from the plain server body.
-  observeEvent(TRUE, kiosk_login(), once = TRUE, ignoreInit = FALSE)
+
+  # Startup: the client reports the remembered username (or "" if none). Auto-
+  # continue as that person if their creds are configured; otherwise show the
+  # username screen. Fires once when the client first reports in.
+  observeEvent(input$ct_remembered_user, {
+    if (!is.null(rv$token)) return()
+    creds <- catrack_creds_for(input$ct_remembered_user)
+    if (!is.null(creds)) {
+      if (!login_with_creds(creds$email, creds$password,
+                            tolower(trimws(input$ct_remembered_user)))) rv$page <- "login"
+    } else {
+      rv$page <- "login"
+    }
+  }, once = TRUE, ignoreNULL = TRUE)
+
+  # Username form submit. Value is "username|nonce" so each tap is a fresh event.
+  observeEvent(input$do_username_login, {
+    rv$auth_error <- NULL
+    username <- tolower(trimws(strsplit(input$do_username_login %||% "", "\\|")[[1]][1]))
+    if (is.na(username) || nchar(username) == 0) {
+      rv$auth_error <- "Please enter your username."; return()
+    }
+    creds <- catrack_creds_for(username)
+    if (is.null(creds)) { rv$auth_error <- "Unknown username. Check the spelling."; return() }
+    if (!login_with_creds(creds$email, creds$password, username))
+      rv$auth_error <- "Sign-in failed — try again in a moment."
+  })
+
+  # Safety net: if the client never reports a remembered username (JS blocked,
+  # etc.), do not hang on the loading splash — fall through to the username
+  # screen after a short grace period.
+  .login_start    <- Sys.time()
+  .login_fallback <- reactiveVal(TRUE)
+  observe({
+    if (!.login_fallback()) return()
+    if (!is.null(rv$token)) { .login_fallback(FALSE); return() }
+    invalidateLater(2000)
+    if (as.numeric(difftime(Sys.time(), .login_start, units = "secs")) >= 6 &&
+        identical(rv$page, "loading")) { rv$page <- "login"; .login_fallback(FALSE) }
+  })
 
   # ── AUTH: switch login/signup mode ─────────────────────────
   observeEvent(input$switch_auth_mode, {
@@ -478,10 +512,12 @@ server <- function(input, output, session) {
       return(loading_page_ui())
     }
 
-    # ── Login (manual fallback only — normally auto-login skips this) ──
+    # ── Username sign-in (typed username, no password; auto-continues when a
+    #    username is remembered). The email/password login_page_ui remains as a
+    #    deep fallback but is not shown in normal operation. ──
     if (page == "login") {
       return(tagList(
-        login_page_ui(mode = rv$auth_mode),
+        username_login_ui(),
         if (isTRUE(rv$show_methodology)) methodology_modal_ui()
       ))
     }
@@ -798,9 +834,12 @@ server <- function(input, output, session) {
     }
   }, ignoreInit = TRUE)
 
-  # ── Logout ─────────────────────────────────────────────────
+  # ── Logout / switch user ───────────────────────────────────
+  # Also forget the remembered username so the username screen shows empty and
+  # the next person can type theirs (rather than auto-continuing as the last).
   observeEvent(input$logout, {
     session$sendCustomMessage("clear_auth_session", list())
+    session$sendCustomMessage("ct_clear_username", list())
     rv$token         <- NULL
     rv$refresh_token  <- NULL
     rv$token_acquired <- NULL

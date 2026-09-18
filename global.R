@@ -28,13 +28,33 @@ SUPABASE_SERVICE_KEY <- Sys.getenv("SUPABASE_SERVICE_KEY")
 ANTHROPIC_API_KEY    <- Sys.getenv("ANTHROPIC_API_KEY")
 
 # ── KIOSK AUTO-LOGIN ────────────────────────────────────────
-# This is a single-user app: on startup it signs in automatically as the
-# owner using these env vars, so there is no login screen. The email defaults
-# to the owner's; set CATRACK_PASSWORD (Posit Connect → Environment Variables,
-# and .Renviron locally). RLS still applies — the app holds a real user JWT.
-# If the password is unset or wrong, the app falls back to the login form.
+# Two friends share this app. Each signs in by USERNAME (no password typed);
+# the username maps to a real Supabase account whose credentials live only in
+# env vars (Posit Connect + local .Renviron), never in the browser — so RLS
+# still isolates each person's data. The last username is remembered in the
+# browser (localStorage) and auto-continues on the next launch, preserving the
+# kiosk feel while allowing a switch. If a username's creds are unset/rejected,
+# the app shows the username screen rather than bricking.
 CATRACK_EMAIL    <- Sys.getenv("CATRACK_EMAIL", "catadamsm@gmail.com")
 CATRACK_PASSWORD <- Sys.getenv("CATRACK_PASSWORD")
+
+# username -> hidden Supabase credentials. Passwords come from env only.
+CATRACK_USERS <- list(
+  adamsc  = list(email = CATRACK_EMAIL,
+                 password = CATRACK_PASSWORD),
+  miyanoc = list(email    = Sys.getenv("CATRACK_MIYA_EMAIL", "miyanoc@catrack.app"),
+                 password = Sys.getenv("CATRACK_MIYA_PASSWORD"))
+)
+# Returns list(email, password) for a username, or NULL if unknown / creds unset.
+catrack_creds_for <- function(username) {
+  u <- tolower(trimws(if (is.null(username)) "" else as.character(username)))
+  creds <- CATRACK_USERS[[u]]
+  if (is.null(creds)) return(NULL)
+  em <- if (is.null(creds$email))    "" else creds$email
+  pw <- if (is.null(creds$password)) "" else creds$password
+  if (nchar(em) == 0 || nchar(pw) == 0) return(NULL)
+  list(email = em, password = pw)
+}
 
 # Warn loudly at startup if any required key is missing
 missing_keys <- c("SUPABASE_URL","SUPABASE_ANON_KEY","SUPABASE_SERVICE_KEY")[
@@ -382,7 +402,14 @@ catrack_runtime_js <- function() {
         // disconnect mid-session returns you to your session, not
         // back to the dashboard.
         function tryRestore() {
-          if (!window.Shiny) { setTimeout(tryRestore, 150); return; }
+          // Wait until Shiny is fully ready — the object appears before
+          // setInputValue is defined, and calling it early throws.
+          if (!window.Shiny || typeof Shiny.setInputValue !== "function") { setTimeout(tryRestore, 150); return; }
+          // Multi-user: report the remembered username so the server can
+          // auto-continue as that person (or show the username screen if none).
+          var _remembered = "";
+          try { _remembered = localStorage.getItem("catrack_username") || ""; } catch(e) {}
+          Shiny.setInputValue("ct_remembered_user", _remembered, {priority:"event"});
           var rt = localStorage.getItem("catrack_refresh_token");
           if (rt && rt.length > 10) {
             Shiny.setInputValue("restore_session_refresh", rt, {priority:"event"});
@@ -437,6 +464,22 @@ catrack_runtime_js <- function() {
           Shiny.addCustomMessageHandler("trigger_input", function(msg) {
             if (!msg || !msg.name) return;
             Shiny.setInputValue(msg.name, msg.value, {priority:"event"});
+          });
+
+          // ── Username sign-in (multi-user) ──
+          // Submit the typed username to the server; the server confirms and
+          // then tells us to remember it (ct_store_username) so typos are not saved.
+          window.ctSubmitUsername = function() {
+            var el = document.getElementById("username_input");
+            var u  = el ? el.value.trim().toLowerCase() : "";
+            if (!u) return;
+            Shiny.setInputValue("do_username_login", u + "|" + Date.now(), {priority:"event"});
+          };
+          Shiny.addCustomMessageHandler("ct_store_username", function(msg) {
+            if (msg && msg.username) { try { localStorage.setItem("catrack_username", msg.username); } catch(e){} }
+          });
+          Shiny.addCustomMessageHandler("ct_clear_username", function(msg) {
+            try { localStorage.removeItem("catrack_username"); } catch(e){}
           });
         }
 
@@ -640,6 +683,33 @@ login_page_ui <- function(mode = "login") {
           uiOutput("auth_error"),
           tags$button("Log in", class = "ct-btn-primary",
                       onclick = "Shiny.setInputValue('auth_action', 'login', {priority:'event'})")
+      )
+  )
+}
+
+# Primary sign-in screen: username only (no password). The username maps to a
+# hidden Supabase account (CATRACK_USERS) so RLS still applies. The field is
+# pre-filled from the remembered username; window.ctSubmitUsername (defined in
+# catrack_runtime_js) sends it to the server. See server.R do_username_login.
+username_login_ui <- function() {
+  div(class = "ct-onboard-step",
+      div(class = "ct-logo-wrap", catrack_logo_svg("full")),
+      div(class = "ct-tagline", "Science-based training. Built around you."),
+      div(class = "ct-auth-card",
+          h5("Sign in", style = "font-weight:700; margin-bottom:6px;"),
+          div(style = "font-size:12px; color:#888; margin-bottom:16px;",
+              "Enter your username to continue."),
+          tags$input(id = "username_input", type = "text", class = "form-control",
+                     autocomplete = "username", autocapitalize = "none",
+                     spellcheck = "false", placeholder = "username",
+                     onkeydown = "if(event.key==='Enter'){event.preventDefault();window.ctSubmitUsername&&window.ctSubmitUsername();}"),
+          uiOutput("auth_error"),
+          tags$button("Continue", class = "ct-btn-primary", style = "margin-top:12px;",
+                      onclick = "window.ctSubmitUsername&&window.ctSubmitUsername()"),
+          # Pre-fill the remembered username on render (best-effort).
+          tags$script(HTML(paste0(
+            "(function(){try{var el=document.getElementById('username_input');",
+            "if(el){var u=localStorage.getItem('catrack_username')||'';if(u)el.value=u;el.focus();}}catch(e){}})()")))
       )
   )
 }
