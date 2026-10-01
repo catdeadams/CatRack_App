@@ -941,8 +941,27 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
   total_wo     <- if (!is.null(workouts)) nrow(workouts) else 0L
   pct          <- if (total_wo > 0) round(100 * completed / total_wo) else 0L
   start        <- as.Date(program$start_date)
-  current_week <- max(1L, min(n_weeks,
-                              as.integer(floor(as.numeric(current_date - start) / 7)) + 1L))
+  # Current week tracks PROGRESS, not the calendar: it is the earliest week that
+  # still has an unfinished (not completed, not skipped) session. Someone who
+  # trains slower than one block per week shouldn't be pushed ahead of where they
+  # actually are. Falls back to the date estimate only before any workouts exist.
+  current_week <- local({
+    if (!is.null(workouts) && nrow(workouts) > 0 &&
+        all(c("week_number", "completed_at") %in% names(workouts))) {
+      done_or_skip <- vapply(seq_len(nrow(workouts)), function(i) {
+        ca <- workouts$completed_at[i]
+        is_done <- !is.null(ca) && !is.na(ca) && nchar(as.character(ca)) > 5
+        is_skip <- isTRUE(tryCatch(as.logical(workouts$is_skipped[i]), error = \(e) FALSE))
+        is_done || is_skip
+      }, logical(1))
+      unfinished <- suppressWarnings(as.integer(workouts$week_number[!done_or_skip]))
+      unfinished <- unfinished[!is.na(unfinished)]
+      if (length(unfinished) > 0) min(unfinished) else n_weeks
+    } else {
+      as.integer(floor(as.numeric(current_date - start) / 7)) + 1L
+    }
+  })
+  current_week <- max(1L, min(n_weeks, as.integer(current_week)))
   
   tagList(
     div(class = "ct-block-header",
@@ -1021,13 +1040,25 @@ dashboard_page_ui <- function(program, workouts, current_date = Sys.Date()) {
                           else NULL
                       ),
                       if (is_done)
-                        tags$button("View Summary",
-                          style=paste0("margin-top:6px;font-size:11px;color:#1D9E75;",
-                                       "background:none;border:none;cursor:pointer;padding:0;",
-                                       "text-decoration:underline;font-weight:600;"),
-                          onclick=sprintf(
-                            "Shiny.setInputValue('view_summary','%s',{priority:'event'});event.stopPropagation();",
-                            wo$id))
+                        # Completed: view the read-only summary, OR re-open the
+                        # session to fix a weight/rep you mis-logged. Editing a
+                        # finished workout opens it in review mode (inputs stay
+                        # editable; changes save immediately).
+                        div(style="margin-top:6px; display:flex; gap:16px; align-items:center;",
+                          tags$button("View Summary",
+                            style=paste0("font-size:11px;color:#1D9E75;",
+                                         "background:none;border:none;cursor:pointer;padding:0;",
+                                         "text-decoration:underline;font-weight:600;"),
+                            onclick=sprintf(
+                              "Shiny.setInputValue('view_summary','%s',{priority:'event'});event.stopPropagation();",
+                              wo$id)),
+                          tags$button("Edit",
+                            style=paste0("font-size:11px;color:#5DCAA5;",
+                                         "background:none;border:none;cursor:pointer;padding:0;",
+                                         "text-decoration:underline;font-weight:600;"),
+                            onclick=sprintf(
+                              "Shiny.setInputValue('start_from_preview','%s',{priority:'event'});event.stopPropagation();",
+                              wo$id)))
                       else if (!is_skipped)
                         # Skip is available for ANY incomplete session now,
                         # regardless of how many days have passed.

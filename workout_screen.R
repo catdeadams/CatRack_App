@@ -886,9 +886,17 @@ workout_screen_ui <- function(workout, exercises, last_perf_map,
                                 "border-radius:7px; font-size:18px; cursor:pointer;",
                                 "width:34px; height:34px; display:flex;",
                                 "align-items:center; justify-content:center; line-height:1;"),
+                              # Flush the current field values to the server in the
+                              # SAME input batch as the log event, so an edit always
+                              # saves even if the per-set 'input' listener was lost on
+                              # a re-render (root cause of "edits don't save").
                               onclick = sprintf(
-                                "Shiny.setInputValue('log_set','%s|%d',{priority:'event'})",
-                                we$id, s))
+                                paste0("(function(){var b='%s_s%d';",
+                                       "['w_','r_','rpe_','note_'].forEach(function(p){",
+                                       "var el=document.getElementById(p+b);",
+                                       "if(el&&window.Shiny&&Shiny.setInputValue)Shiny.setInputValue(p+b,el.value);});",
+                                       "Shiny.setInputValue('log_set','%s|%d',{priority:'event'});})()"),
+                                we$id, s, we$id, s))
                       ),
                       # Per-set notes input — small, inline, one per set.
                       # localStorage-backed so reconnects don't wipe a draft.
